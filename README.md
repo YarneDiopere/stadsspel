@@ -4,15 +4,11 @@ Een Risk-achtig stadsspel voor de KSA: verover zones in het stadscentrum door op
 
 Live: https://yarnediopere.github.io/stadsspel/
 
-## Firebase koppelen
+## Firebase
 
-Zonder Firebase draait de app in demo-modus (alles blijft op één toestel).
-
-1. Maak een gratis project op https://console.firebase.google.com (Spark-plan, geen kaart nodig).
-2. Build > Realtime Database > Create database (regio europe-west1).
-3. Zet bij Rules: `{ "rules": { ".read": true, ".write": true } }`
-4. Project settings > Your apps > Web app (`</>`) en kopieer de `firebaseConfig`.
-5. Plak die in `js/config.js` en push.
+De app gebruikt de Realtime Database van het Firebase-project `stadsspel-836d6` (regio europe-west1).
+De koppeling staat in `js/config.js`. De databaseregels laten iedereen lezen en schrijven op
+`rooms`, `photos`, `pos` en `archive`. Zet `firebaseConfig` op `null` voor demo-modus op één toestel.
 
 ## Lokaal draaien
 
