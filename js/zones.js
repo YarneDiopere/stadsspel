@@ -3,7 +3,7 @@ import { Delaunay } from 'https://cdn.jsdelivr.net/npm/d3-delaunay@6/+esm';
 // Verdeelt een cirkel rond het centrum in zones: organische (Voronoi) gebieden
 // waarvan de kernen op echte plekken liggen en de grenzen langs echte straten lopen.
 
-const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter', 'https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
+const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
 const RIM_N = 64;
 
 export function dist(a, b) { // meter tussen twee {lat,lng}
@@ -42,7 +42,7 @@ out center tags;`;
   let last;
   for (const url of OVERPASS) {
     try {
-      const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 15000);
+      const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 12000);
       const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), signal: ctl.signal });
       clearTimeout(to);
       if (!r.ok) throw new Error('Overpass ' + r.status);
@@ -135,16 +135,35 @@ function route(a, b, maxLen) { // Dijkstra over het stratennet
   return null;
 }
 
+function area(p) {
+  let a = 0;
+  for (let i = 0, j = p.length - 1; i < p.length; j = i++) a += p[j][0] * p[i][1] - p[i][0] * p[j][1];
+  return Math.abs(a) / 2;
+}
+function centroid(p) {
+  let a = 0, x = 0, y = 0;
+  for (let i = 0, j = p.length - 1; i < p.length; j = i++) { const f = p[j][0] * p[i][1] - p[i][0] * p[j][1]; a += f; x += (p[j][0] + p[i][0]) * f; y += (p[j][1] + p[i][1]) * f; }
+  return a ? [x / (3 * a), y / (3 * a)] : p[0];
+}
+
 export async function generateZones(center, radius, count) {
   const proj = makeProj(center), R = radius;
   let osm = null;
   try { osm = await fetchOsm(center, R); } catch (e) { console.warn('Geen straatdata, zones worden puur organisch', e); }
   const { nodes, roads, pois } = parseOsm(osm, proj);
   const rand = rng(Math.round(center.lat * 1e4) ^ Math.round(center.lng * 1e4) ^ (count * 7919));
-  const seeds = pickSeeds(count, R, pois, rand);
-  const vor = Delaunay.from(seeds.map(s => [s.x, s.y])).voronoi([-R - 1, -R - 1, R + 1, R + 1]);
 
-  // Hoekpunten: gedeeld tussen buurzones, en waar mogelijk vastgeklikt op een kruispunt.
+  // Kernen spreiden (Lloyd), zodat alle zones ongeveer even groot zijn.
+  const cells = pts => {
+    const vor = Delaunay.from(pts).voronoi([-R - 1, -R - 1, R + 1, R + 1]);
+    return pts.map((_, i) => { const c = vor.cellPolygon(i); return c ? clipToCircle(c.slice(0, -1), R) : []; });
+  };
+  let seeds = pickSeeds(count, R, pois, rand).map(s => [s.x, s.y]);
+  for (let k = 0; k < 4; k++) seeds = cells(seeds).map((c, i) => (c.length >= 3 ? centroid(c) : seeds[i]));
+  const raws = cells(seeds);
+  const cellR = R / Math.sqrt(count), avgArea = Math.PI * R * R / count;
+
+  // Hoekpunten: gedeeld tussen buurzones, en waar het dichtbij kan vastgeklikt op een kruispunt.
   const rimR = R * Math.cos(Math.PI / RIM_N) - 1;
   const verts = new Map();
   const vert = p => {
@@ -152,13 +171,12 @@ export async function generateZones(center, radius, count) {
     let v = verts.get(key);
     if (!v) {
       v = { key, p, rim: Math.hypot(p[0], p[1]) >= rimR, node: null };
-      let bd = v.rim ? 90 : 160;
-      for (const n of nodes) { const d = Math.hypot(n.x - p[0], n.y - p[1]); if (d < bd && Math.hypot(n.x, n.y) < R) { bd = d; v.node = n; } }
+      let bd = v.rim ? Math.min(60, cellR * 0.25) : Math.min(110, cellR * 0.38);
+      for (const n of nodes) { const dd = Math.hypot(n.x - p[0], n.y - p[1]); if (dd < bd && Math.hypot(n.x, n.y) < R) { bd = dd; v.node = n; } }
       verts.set(key, v);
     }
     return v;
   };
-  const pos = v => (v.node && !v.rim ? [v.node.x, v.node.y] : v.p);
   const edges = new Map();
   const edge = (a, b) => {
     if (a.key > b.key) return edge(b, a).slice().reverse();
@@ -169,32 +187,38 @@ export async function generateZones(center, radius, count) {
     else {
       const A = a.node ? [a.node.x, a.node.y] : a.p, B = b.node ? [b.node.x, b.node.y] : b.p;
       const straight = Math.hypot(A[0] - B[0], A[1] - B[1]);
-      const mid = (a.node && b.node && a.node !== b.node && route(a.node, b.node, straight * 2 + 80)) || [A, B];
+      const mid = (a.node && b.node && a.node !== b.node && route(a.node, b.node, straight * 1.6 + 40)) || [A, B];
       path = [...(a.rim && a.node ? [a.p] : []), ...mid, ...(b.rim && b.node ? [b.p] : [])];
     }
     edges.set(k, path);
     return path;
   };
-
-  const used = new Set();
-  const zones = seeds.map((s, i) => {
-    const cell = vor.cellPolygon(i);
-    const raw = cell ? clipToCircle(cell.slice(0, -1), R) : [];
+  let polys = raws.map(raw => {
     const vs = raw.map(vert).filter((v, j, arr) => v !== arr[(j + 1) % arr.length]);
     let pts = [];
     vs.forEach((v, j) => { pts.push(...edge(v, vs[(j + 1) % vs.length])); });
     pts = pts.filter((p, j) => { const q = pts[(j + 1) % pts.length]; return Math.hypot(p[0] - q[0], p[1] - q[1]) > 3; });
-    if (pts.length < 3) pts = raw.length >= 3 ? raw : vs.map(pos);
-
-    let name = s.poi ? s.name : null;
-    if (!name || used.has(name)) {
-      name = roads.map(r => ({ r, d: Math.hypot(r.x - s.x, r.y - s.y) })).sort((a, b) => a.d - b.d).find(o => !used.has(o.r.name) && o.d < R / 2)?.r.name;
-    }
-    if (!name) name = 'Zone ' + (i + 1);
-    used.add(name);
-    const ring = pts.map(proj.from); ring.push(ring[0]);
-    return { id: 'z' + i, name, poly: ring, c: proj.from([s.x, s.y]) };
+    return pts.length >= 3 ? pts : raw;
   });
+  // Als het volgen van straten ergens een zone bijna laat verdwijnen, dan liever rechte, eerlijke grenzen.
+  if (polys.some(p => area(p) < avgArea * 0.35)) polys = raws;
+
+  const used = new Set();
+  const nearest = (list, s, max) => list.map(o => ({ o, d: Math.hypot(o.x - s[0], o.y - s[1]) })).sort((a, b) => a.d - b.d).find(o => o.d < max && !used.has(o.o.name))?.o.name;
+  const zones = seeds.map((s, i) => {
+    const name = nearest(pois, s, cellR * 0.8) || nearest(roads, s, R / 2) || 'Zone ' + (i + 1);
+    used.add(name);
+    const ring = polys[i].map(proj.from); ring.push(ring[0]);
+    return { id: 'z' + i, name, poly: ring, c: proj.from(s) };
+  });
+  // Zonder straatdata toch echte namen: vraag per zone de dichtstbijzijnde straat op.
+  if (!osm) await Promise.all(zones.map(async zn => {
+    try {
+      const j = await (await fetch(`https://photon.komoot.io/reverse?lon=${zn.c[0]}&lat=${zn.c[1]}`)).json();
+      const pr = j.features[0]?.properties, n = pr?.street || pr?.name;
+      if (n && !used.has(n)) { used.add(n); zn.name = n; }
+    } catch { /* naam blijft "Zone n" */ }
+  }));
   return { zones, osm: !!osm };
 }
 

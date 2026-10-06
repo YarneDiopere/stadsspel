@@ -1,7 +1,6 @@
-// Bewijs (foto of video) klaarmaken en laten beoordelen door Gemini.
+// Bewijs (foto of video) klaarmaken en laten nakijken via het tussenstation (proxy/Code.gs).
 
-const MODELS = ['gemini-flash-latest', 'gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-flash-lite-latest', 'gemini-3.5-flash-lite'];
-const MAX_VIDEO = 14e6; // inline limiet van Gemini is 20 MB na base64
+const MAX_VIDEO = 8e6; // grotere filmpjes gaan rechtstreeks naar de leiding
 
 function toJpeg(src, w, h, max, q) {
   const k = Math.min(1, max / Math.max(w, h));
@@ -49,32 +48,19 @@ export async function prepareMedia(file) {
   return { thumb, ai: { mime: 'image/jpeg', data: thumb.split(',')[1] }, video: false };
 }
 
-export async function verify(key, task, media) {
-  const prompt = `Je bent scheidsrechter bij een stadsspel van een jeugdbeweging.
-Opdracht: "${task.title}"
-Omschrijving: ${task.desc || '-'}
-Wat er te zien moet zijn: ${task.check || task.desc || task.title}
-
-Bekijk het bewijs en oordeel of de opdracht overtuigend is uitgevoerd. Tel waar een aantal gevraagd wordt. Keur af als het bewijs ontbreekt, onduidelijk is of duidelijk van een scherm is gefotografeerd, maar wees niet kleinzielig over details.
-Antwoord enkel met JSON: {"ok": true of false, "reden": "korte uitleg in het Nederlands, hoogstens 20 woorden"}`;
-  const body = JSON.stringify({
-    contents: [{ parts: [{ inline_data: { mime_type: media.mime, data: media.data } }, { text: prompt }] }],
-    generationConfig: { responseMimeType: 'application/json', temperature: 0 },
-  });
-  let last;
-  for (const model of MODELS) {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key }, body,
+export async function verify(proxyUrl, code, task, media) {
+  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 30000);
+  try {
+    // text/plain houdt het een "eenvoudig" verzoek, zodat de browser geen preflight stuurt die Apps Script niet beantwoordt.
+    const r = await fetch(proxyUrl, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, signal: ctl.signal,
+      body: JSON.stringify({ code, title: task.title, desc: task.desc, check: task.check, mime: media.mime, data: media.data }),
     });
-    if (!r.ok) {
-      const msg = await r.json().then(j => j.error?.message || '', () => '');
-      last = new Error(r.status === 503 || r.status === 429 ? 'de AI is overbelast' : `fout ${r.status} ${msg.slice(0, 100)}`);
-      if ([400, 401, 403].includes(r.status)) throw last;
-      continue; // overbelast of onbekend model: probeer het volgende
-    }
+    if (!r.ok) throw new Error('fout ' + r.status);
     const j = await r.json();
-    const out = JSON.parse(j.candidates[0].content.parts.filter(p => !p.thought).map(p => p.text || '').join(''));
-    return { ok: out.ok === true, reden: String(out.reden || '').slice(0, 200) };
-  }
-  throw last;
+    if (j.error) throw new Error(j.error);
+    return { ok: j.ok === true, reden: j.reden || '' };
+  } catch (e) {
+    throw new Error(e.name === 'AbortError' ? 'het duurde te lang' : e.message);
+  } finally { clearTimeout(to); }
 }

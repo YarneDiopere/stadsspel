@@ -49,5 +49,5 @@ export const DEFAULT_TASKS = [
   t('Oud steen', 'Zoek een gevel met een jaartal van vóór 1950.', 'Een gebouw of gevelsteen met een leesbaar jaartal vóór 1950.', 2),
   t('Mop van de dag', 'Vertel een voorbijganger een mop en film de reactie.', 'Iemand die een mop vertelt aan een voorbijganger die lacht of reageert.', 3),
   t('Schoenentoren', 'Stapel alle schoenen van de groep tot één toren.', 'Een stapel van minstens 6 schoenen op elkaar.', 1),
-  t('Spiegelbeeld', 'Maak een groepsfoto via een spiegel of etalageruit.', 'Een weerspiegeling van meerdere personen in een spiegel of ruit.', 1),
+  t('Spiegelbeeld', 'Maak een foto van jezelf of de groep via een spiegel of etalageruit.', 'Een weerspiegeling van één of meer personen in een spiegel of ruit.', 1),
 ];

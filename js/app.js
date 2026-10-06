@@ -1,4 +1,5 @@
 import { db, isLocal } from './db.js';
+import { aiProxyUrl } from './config.js';
 import { TEAMS, UNITS, DURATIONS, DEFAULT_TASKS, REWARD, START_POWER } from './data.js';
 import { generateZones, zoneAt, pickStarts, dist } from './zones.js';
 import { makeMap } from './map.js';
@@ -49,6 +50,7 @@ const zoneById = id => zones().find(z => z.id === id);
 const zst = id => S.room.zstate?.[id] || { owner: '', power: 0 };
 const canAct = id => !!id && (!meta().gps || !!Me()?.sup || S.zoneId === id);
 const target = () => (S.sel && canAct(S.sel) ? S.sel : S.zoneId);
+const seesPower = owner => !!Me()?.sup || (!!owner && owner === Me()?.team) || phase() === 'ended';
 const log = (m, t) => db.push(R() + '/log', { m, t: t || '', ts: db.now() });
 
 /* ---------- acties via data-act ---------- */
@@ -71,7 +73,7 @@ document.addEventListener('change', e => {
 /* ---------- start, meedoen ---------- */
 function go(view) {
   S.view = view; $('#screen').hidden = false; $('#game').hidden = true; $('#screen')._h = null;
-  ({ home: viewHome, join: viewJoin, create: viewCreate, settings: viewSettings, archive: viewArchive })[view]();
+  ({ home: viewHome, join: viewJoin, create: viewCreate, archive: viewArchive })[view]();
   window.scrollTo(0, 0);
 }
 A.go = d => go(d.v);
@@ -83,30 +85,10 @@ function viewHome() {
     <p class="sub">Verover de stad, zone per zone</p>
     <button class="btn big" data-act="go" data-v="create">Spel aanmaken</button>
     <button class="btn big alt" data-act="go" data-v="join">Meedoen</button>
-    <div class="homelinks"><button class="btn ghost small" data-act="go" data-v="archive">📚 Archief</button><button class="btn ghost small" data-act="go" data-v="settings">⚙️ Instellingen leiding</button></div>
+    <div class="homelinks"><button class="btn ghost small" data-act="go" data-v="archive">📚 Archief</button></div>
     ${isLocal ? '<p class="note">Demo-modus: er is nog geen Firebase gekoppeld, dus spellen blijven op dit toestel.</p>' : ''}
   </section>`;
 }
-
-// De sleutel voor de automatische fotocontrole blijft enkel op dit toestel staan.
-function viewSettings() {
-  const has = !!ls('gkey');
-  $('#screen').innerHTML = `<section class="card narrow">
-    <button class="back" data-act="go" data-v="home">‹ Terug</button>
-    <h2>Automatische controle</h2>
-    <p>Bewaar hier één keer je Gemini API-sleutel. Zolang jij als leiding een spel open hebt staan, kijkt jouw toestel de foto's van alle groepen automatisch na.</p>
-    ${has ? '<p class="note">✓ Er is een sleutel bewaard op dit toestel.</p>' : ''}
-    <label>${has ? 'Sleutel vervangen' : 'Gemini API-sleutel'}<input id="gk" type="password" autocomplete="off" placeholder="Plak de sleutel"></label>
-    <button class="btn big" data-act="saveKey">Opslaan</button>
-    ${has ? '<button class="btn big ghost" data-act="clearKey">Sleutel verwijderen</button>' : ''}
-    <p class="hint">De sleutel wordt nergens gedeeld: niet met spelers, niet met de database. Zonder sleutel keurt de leiding alles zelf goed.</p>
-  </section>`;
-}
-A.saveKey = () => {
-  const k = $('#gk').value.trim(); if (k.length < 20) return toast('Dat lijkt geen geldige sleutel');
-  ls('gkey', k); toast('Opgeslagen op dit toestel'); viewSettings();
-};
-A.clearKey = () => { ls('gkey', null); viewSettings(); };
 
 // Archief: afgelopen spellen en alle opdrachten die ooit gebruikt zijn.
 async function viewArchive(tab = 'games') {
@@ -124,14 +106,22 @@ async function viewArchive(tab = 'games') {
     return frame(`<p class="hint">${list.length} opdrachten. Elke opdracht die in een spel wordt toegevoegd komt hier bij.</p>` +
       list.map(t => `<div class="titem"><div><b>${esc(t.title)}</b><small>${esc(t.desc)}</small></div><span class="prize">${'⭐'.repeat(t.diff || 1)}</span></div>`).join(''));
   }
-  const games = Object.values(hist || {}).sort((a, b) => b.date - a.date);
+  const games = Object.entries(hist || {}).map(([id, g]) => ({ id, ...g })).sort((a, b) => b.date - a.date);
   frame(games.map(g => `<div class="sub-card">
-      <div><b>📍 ${esc((g.place || '').split(',')[0])}</b> <span class="tag">${g.mode === 'leger' ? 'Leger' : 'Verover'}</span></div>
+      <div><b>${g.title ? esc(g.title) : '📍 ' + esc((g.place || '').split(',')[0])}</b> <span class="tag">${g.mode === 'leger' ? 'Leger' : 'Verover'}</span></div>
       <small>${new Date(g.date).toLocaleDateString('nl-BE', { day: 'numeric', month: 'long', year: 'numeric' })} · ${fmtDur(g.duration)} · ${g.players} deelnemers · ${g.zones} zones</small>
       ${scoreRows(g.score || [], true)}
+      <div class="row"><button class="btn small ghost" data-act="histRename" data-id="${esc(g.id)}" data-t="${esc(g.title || (g.place || '').split(',')[0])}">✏️ Naam wijzigen</button><button class="btn small ghost" data-act="histDel" data-id="${esc(g.id)}">🗑️ Verwijderen</button></div>
     </div>`).join('') || '<p class="note">Nog geen afgelopen spellen. Een spel komt hier te staan zodra het afgelopen is.</p>');
 }
 A.arch = d => viewArchive(d.tab);
+A.histRename = async d => {
+  const t = prompt('Naam van dit spel', d.t);
+  if (t && t.trim()) { await db.set(`history/${d.id}/title`, t.trim().slice(0, 60)); viewArchive(); }
+};
+A.histDel = async d => {
+  if (confirm('Dit spel uit het archief verwijderen? Dat kan niet ongedaan gemaakt worden.')) { await db.set('history/' + d.id, null); viewArchive(); }
+};
 
 // Bewaart de eindstand in het archief. Elke leiding mag dit doen; het resultaat is hetzelfde.
 function saveHistory() {
@@ -400,7 +390,6 @@ function onRoom() {
     if (me.sup && !S.posSub) { S.posSub = true; S.unsub.push(db.on('pos/' + S.code, v => { S.others = v || {}; updateMap(); })); }
     const T = myTeam();
     if (T && ((m.phase === 'travel' && T.arrived) || m.phase === 'playing') && !ls('intro-' + S.code)) { ls('intro-' + S.code, '1'); playIntro(m.mode); }
-    if (me.sup) Object.entries(S.room.subs || {}).forEach(([sid, sub]) => { if (sub.status === 'checking' && !sub.aiBy) autoCheck(sid); });
     if (phase() === 'ended') saveHistory();
     if (phase() === 'ended' && !S.endShown) { S.endShown = true; S.sheet = { t: 'score' }; }
   }
@@ -523,7 +512,7 @@ function updateMap() {
   S.map.setZones(zones().map(z => { const t = teams[zst(z.id).owner]; return { id: z.id, poly: z.poly, color: t ? t.color : '#8a7a5c', op: t ? 0.55 : 0.1 }; }), S.sel);
   S.map.setChips(zones().map(z => {
     const s = zst(z.id), t = teams[s.owner];
-    return { id: z.id, lng: z.c[0], lat: z.c[1], color: t ? t.color : '#8a7a5c', cls: (t ? 'own' : '') + (z.id === S.zoneId ? ' here' : ''), html: (t ? `<b>${s.power}</b>` : '') + `<span>${esc(z.name)}</span>` };
+    return { id: z.id, lng: z.c[0], lat: z.c[1], color: t ? t.color : '#8a7a5c', cls: (t ? 'own' : '') + (z.id === S.zoneId ? ' here' : ''), html: (t ? `<b>${seesPower(s.owner) ? s.power : '🛡️'}</b>` : '') + `<span>${esc(z.name)}</span>` };
   }));
   S.map.setMarkers('me', S.pos ? [{ ...S.pos, html: `<div class="me-dot" style="--c:${T?.color || '#3b2a17'}"></div>` }] : []);
   const start = T && meta().phase === 'travel' ? zoneById(T.start) : null;
@@ -555,7 +544,7 @@ function renderHud() {
   } else if (ph === 'travel') {
     if (T && !T.arrived) {
       const z = zoneById(T.start), d = S.pos ? Math.round(dist(S.pos, { lng: z.c[0], lat: z.c[1] })) : null;
-      banner = `🚩 Ga met je groep naar <b>${esc(z.name)}</b>${d != null && S.zoneId !== T.start ? ` · nog ${d} m` : ''}
+      banner = `🚩 Ga met je groep naar <b>${esc(z.name)}</b>${d != null && S.zoneId !== T.start ? ` · nog ±${Math.max(10, Math.round(d / 10) * 10)} m` : ''}
         <button class="btn small" data-act="arrive" ${canAct(T.start) ? '' : 'disabled'}>We zijn er!</button>${m.gps && !S.pos ? `<small>${esc(S.gpsErr || 'Wachten op gps…')}</small>` : ''}`;
     } else if (T) banner = '✅ Jullie staan klaar. Wacht op het startsein van de leiding.';
     if (me.sup) {
@@ -564,7 +553,7 @@ function renderHud() {
     }
   } else if (ph === 'playing') {
     if (!T && !me.sup) banner = '';
-    else if (S.zoneId) { const z = zoneById(S.zoneId), s = zst(S.zoneId), o = teams[s.owner]; banner = `📍 <b>${esc(z.name)}</b> · ${o ? `<span class="tag" style="--c:${o.color}">${o.name} · ${s.power}</span>` : 'onbezet'} <button class="btn small" data-act="openZone" data-z="${S.zoneId}">Bekijk</button>`; }
+    else if (S.zoneId) { const z = zoneById(S.zoneId), s = zst(S.zoneId), o = teams[s.owner]; banner = `📍 <b>${esc(z.name)}</b> · ${o ? `<span class="tag" style="--c:${o.color}">${o.name}${seesPower(s.owner) ? ' · ' + s.power : ''}</span>` : 'onbezet'} <button class="btn small" data-act="openZone" data-z="${S.zoneId}">Bekijk</button>`; }
     else if (!m.gps || me.sup) banner = 'Tik op een zone op de kaart.';
     else banner = S.pos ? 'Je bent buiten het speelveld.' : esc(S.gpsErr || 'Wachten op gps…');
   } else banner = `🏁 <b>Het spel is afgelopen!</b> <button class="btn small" data-act="sheet" data-t="score">Eindstand</button>`;
@@ -617,10 +606,14 @@ A.tab = d => { S.sheet.tab = d.tab; renderSheet(); };
 function renderSheet() {
   const el = $('#sheet'), s = S.sheet; if (!s) { el.hidden = true; return; }
   const body = ({ tasks: shTasks, task: shTask, shop: shShop, zone: shZone, sup: shSup, score: shScore, menu: shMenu })[s.t]();
-  const top = $('.sheet-body', el)?.scrollTop || 0;
-  if (el.hidden) el._h = null;
-  el.hidden = false;
-  if (setHTML(el, `<div class="sheet-card"><button class="x close" data-act="close">✕</button><div class="sheet-body">${body}</div></div>`)) $('.sheet-body', el).scrollTop = top;
+  // Het kader wordt één keer opgebouwd (met inschuif-animatie); daarna verandert enkel de inhoud.
+  if (el.hidden || !$('.sheet-body', el)) {
+    el.hidden = false;
+    el.innerHTML = '<div class="sheet-card anim"><button class="x close" data-act="close">✕</button><div class="sheet-body"></div></div>';
+  }
+  const b = $('.sheet-body', el), top = b.scrollTop, same = S.sheetKey === s.t + (s.id || s.zid || s.tab || '');
+  if (setHTML(b, body)) b.scrollTop = same ? top : 0;
+  S.sheetKey = s.t + (s.id || s.zid || s.tab || '');
 }
 
 const statusTag = st => ({ uploading: '⏳ wordt verstuurd', checking: '⏳ wordt nagekeken', pending: '⏳ bij de leiding', ai_rejected: '✗ afgekeurd door AI', rejected: '✗ afgekeurd', approved: '✓ goedgekeurd' }[st] || '');
@@ -675,43 +668,16 @@ async function onFile(tid, file) {
     const media = await prepareMedia(file);
     const sid = await db.push(R() + '/subs', { team: me.team, task: tid, zone: zone || '', by: me.name, status: 'uploading', ts: db.now(), video: media.video });
     if (media.thumb) await db.set(`photos/${S.code}/${sid}`, media.thumb);
-    const key = ls('gkey');
-    if (key && media.ai) {
+    if (aiProxyUrl && media.ai) {
       busy('De scheidsrechter bekijkt je bewijs…');
       let res = null, err = '';
-      try { res = await verify(key, task, media.ai); } catch (e) { console.warn(e); err = e.message; }
+      try { res = await verify(aiProxyUrl, S.code, task, media.ai); } catch (e) { console.warn(e); err = e.message; }
       if (res?.ok) { await db.update(`${R()}/subs/${sid}`, { ai: res.reden }); await approve(sid); }
       else if (res) await db.update(`${R()}/subs/${sid}`, { status: 'ai_rejected', ai: res.reden });
       else await db.update(`${R()}/subs/${sid}`, { status: 'pending', aiErr: err });
-    } else if (media.video || !media.thumb) await db.update(`${R()}/subs/${sid}`, { status: 'pending' });
-    else {
-      // Een toestel van de leiding met sleutel pikt dit op; lukt dat niet binnen de minuut, dan beslist de leiding zelf.
-      await db.update(`${R()}/subs/${sid}`, { status: 'checking' });
-      const path = `${R()}/subs/${sid}/status`;
-      setTimeout(() => db.tx(path, st => (st === 'checking' ? 'pending' : undefined)), 60000);
-    }
+    } else await db.update(`${R()}/subs/${sid}`, { status: 'pending' });
   } catch (e) { console.error(e); toast('Er ging iets mis: ' + e.message); }
   busy(null);
-}
-
-// Draait op het toestel van de leiding: kijkt wachtende foto's na met de lokaal bewaarde sleutel.
-const autoChecked = new Set();
-async function autoCheck(sid) {
-  const key = ls('gkey');
-  if (!key || autoChecked.has(sid)) return;
-  autoChecked.add(sid);
-  const base = `${R()}/subs/${sid}`, code = S.code;
-  const claim = await db.tx(base + '/aiBy', v => (v ? undefined : S.pid));
-  if (!claim.committed) return;
-  const fallback = err => { if (err) db.update(base, { aiErr: err }); return db.tx(base + '/status', st => (st === 'checking' ? 'pending' : undefined)); };
-  try {
-    const sub = S.room.subs[sid], img = await db.get(`photos/${code}/${sid}`);
-    if (!img) return fallback();
-    const res = await verify(key, S.room.tasks[sub.task], { mime: 'image/jpeg', data: img.split(',')[1] });
-    await db.update(base, { ai: res.reden });
-    if (res.ok) await approve(sid);
-    else await db.tx(base + '/status', st => (st === 'checking' ? 'ai_rejected' : undefined));
-  } catch (e) { console.warn(e); fallback(e.message); }
 }
 
 async function approve(sid) {
@@ -735,9 +701,13 @@ async function combat(zid, tid, P) {
     return { owner: z.owner, power: z.power - P };
   });
   const T = S.room.teams[tid].name, Z = zoneById(zid).name, old = S.room.teams[before.owner]?.name;
-  if (before.owner === tid) log(`${T} versterkt ${Z} (+${P})`, tid);
-  else if (P > before.power) log(old ? `${T} verovert ${Z} van ${old}! (${P} − ${before.power} = ${P - before.power})` : `${T} verovert ${Z}`, tid);
-  else log(`${T} valt ${Z} aan, maar ${old} houdt stand (${before.power} − ${P} = ${before.power - P})`, before.owner);
+  const won = before.owner !== tid && P > before.power, mineNow = Me()?.team === tid;
+  if (before.owner === tid) log(`${T} versterkt ${Z}`, tid);
+  else if (won) log(old ? `${T} verovert ${Z} van ${old}!` : `${T} verovert ${Z}`, tid);
+  else log(`${T} valt ${Z} aan, maar ${old} houdt stand`, before.owner);
+  // Enkel de aanvaller zelf krijgt cijfers, en alleen over wat nu van hem is.
+  if (mineNow && won && old) toast(`Gewonnen! Er blijven ${P - before.power} van jullie soldaten over in ${Z}.`);
+  if (mineNow && !won && before.owner !== tid) toast(`Aanval op ${Z} mislukt: de verdediging was te sterk.`);
 }
 
 function shShop() {
@@ -766,7 +736,7 @@ function shZone() {
     else if (m.mode === 'verover') body = `<p>${mine ? 'Versterk deze zone' : 'Verover deze zone'} door hier een opdracht uit te voeren.</p><button class="btn big" data-act="sheet" data-t="tasks">🎯 Kies een opdracht</button>`;
     else {
       const u = T.units || {}, d = S.deploy, P = UNITS.reduce((a, x) => a + (d[x.id] || 0) * x.power, 0);
-      const out = mine ? `Zone wordt ${s.power + P} sterk` : P > s.power ? `${P} − ${s.power} = ${P - s.power}: de zone is van jullie!` : `${s.power} − ${P} = ${s.power - P}: de verdediger houdt stand`;
+      const out = mine ? `Zone wordt ${s.power + P} sterk` : !o ? 'Deze zone is onbezet: ze wordt van jullie.' : 'Jullie weten niet hoeveel verdedigers hier staan. Is jullie aanval sterker, dan is de zone van jullie.';
       body = `<p class="hint">Hoeveel soldaten zet je in?</p>
         ${UNITS.map(x => `<div class="unit"><div class="uicon">${x.icon}</div><div><b>${x.name}</b><small>kracht ${x.power} · in bezit ${u[x.id] || 0}</small></div>
           <div class="stepper"><button data-act="dep" data-u="${x.id}" data-d="-1">−</button><b>${d[x.id] || 0}</b><button data-act="dep" data-u="${x.id}" data-d="1">+</button><button class="max" data-act="dep" data-u="${x.id}" data-d="99">max</button></div></div>`).join('')}
@@ -776,7 +746,7 @@ function shZone() {
     }
   }
   return `<h2>${esc(z.name)}</h2>
-    <div class="facts">${o ? `<span class="tag" style="--c:${o.color}">${o.name}</span><span>🛡️ sterkte ${s.power}</span>` : '<span>🏳️ Onbezet</span>'}${zid === S.zoneId ? '<span>📍 Je bent hier</span>' : ''}</div>${body}`;
+    <div class="facts">${o ? `<span class="tag" style="--c:${o.color}">${o.name}</span><span>🛡️ sterkte ${seesPower(s.owner) ? s.power : 'geheim'}</span>` : '<span>🏳️ Onbezet</span>'}${zid === S.zoneId ? '<span>📍 Je bent hier</span>' : ''}</div>${body}`;
 }
 A.dep = d => {
   const have = myTeam().units?.[d.u] || 0;
@@ -802,7 +772,7 @@ function score() {
   const teams = S.room.teams || {};
   return Object.entries(teams).map(([id, t]) => {
     const own = zones().filter(z => zst(z.id).owner === id);
-    return { id, ...t, zones: own.length, power: own.reduce((a, z) => a + zst(z.id).power, 0) };
+    return { id, ...t, zones: own.length, power: own.reduce((a, z) => a + zst(z.id).power, 0), secret: !seesPower(id) };
   }).sort((a, b) => b.zones - a.zones || b.power - a.power);
 }
 // Gelijke stand (zelfde aantal zones en zelfde sterkte) geeft een gedeelde plaats.
@@ -812,13 +782,13 @@ function scoreRows(sc, final) {
   const head = !final || !sc.length ? '' : winners.length > 1
     ? `<div class="winner" style="--c:#5a3d22">🤝 Gelijkspel: ${winners.map(t => esc(t.name)).join(' en ')}</div>`
     : `<div class="winner" style="--c:${sc[0].color}">👑 ${esc(sc[0].name)} wint!</div>`;
-  return head + sc.map(t => `<div class="srow" style="--c:${t.color}"><span class="rank">${sc.findIndex(o => sameScore(o, t)) + 1}</span><b>${esc(t.name)}</b><span>🗺️ ${t.zones}</span><span>🛡️ ${t.power}</span></div>`).join('');
+  return head + sc.map(t => `<div class="srow" style="--c:${t.color}"><span class="rank">${sc.findIndex(o => sameScore(o, t)) + 1}</span><b>${esc(t.name)}</b><span>🗺️ ${t.zones}</span>${t.secret ? '' : `<span>🛡️ ${t.power}</span>`}</div>`).join('');
 }
 function shScore() {
   const ended = phase() === 'ended';
   return `<h2>${ended ? '🏁 Eindstand' : 'Stand'}</h2>
     ${scoreRows(score(), ended)}
-    <p class="hint">Gerangschikt op aantal zones, daarna op totale sterkte.</p>`;
+    <p class="hint">Gerangschikt op aantal zones, daarna op totale sterkte.${ended ? '' : ' De sterkte van andere groepen blijft geheim tot het einde.'}</p>`;
 }
 
 function shMenu() {
