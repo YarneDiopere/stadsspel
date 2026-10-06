@@ -24,6 +24,13 @@ function toast(msg, color) {
   setTimeout(() => t.remove(), 5000);
 }
 
+// Zet HTML enkel als die verschilt van wat er al staat, zodat open invoervelden en de camera-knop niet telkens vervangen worden.
+function setHTML(el, html) {
+  if (el._h === html) return false;
+  el._h = html; el.innerHTML = html;
+  return true;
+}
+
 /* ---------- state ---------- */
 const S = {
   pid: ls('pid') || (ls('pid', rid()), ls('pid')),
@@ -63,8 +70,8 @@ document.addEventListener('change', e => {
 
 /* ---------- start, meedoen ---------- */
 function go(view) {
-  S.view = view; $('#screen').hidden = false; $('#game').hidden = true;
-  ({ home: viewHome, join: viewJoin, create: viewCreate, settings: viewSettings })[view]();
+  S.view = view; $('#screen').hidden = false; $('#game').hidden = true; $('#screen')._h = null;
+  ({ home: viewHome, join: viewJoin, create: viewCreate, settings: viewSettings, archive: viewArchive })[view]();
   window.scrollTo(0, 0);
 }
 A.go = d => go(d.v);
@@ -76,7 +83,7 @@ function viewHome() {
     <p class="sub">Verover de stad, zone per zone</p>
     <button class="btn big" data-act="go" data-v="create">Spel aanmaken</button>
     <button class="btn big alt" data-act="go" data-v="join">Meedoen</button>
-    <button class="btn ghost small" style="margin-top:18px" data-act="go" data-v="settings">⚙️ Instellingen leiding</button>
+    <div class="homelinks"><button class="btn ghost small" data-act="go" data-v="archive">📚 Archief</button><button class="btn ghost small" data-act="go" data-v="settings">⚙️ Instellingen leiding</button></div>
     ${isLocal ? '<p class="note">Demo-modus: er is nog geen Firebase gekoppeld, dus spellen blijven op dit toestel.</p>' : ''}
   </section>`;
 }
@@ -100,6 +107,43 @@ A.saveKey = () => {
   ls('gkey', k); toast('Opgeslagen op dit toestel'); viewSettings();
 };
 A.clearKey = () => { ls('gkey', null); viewSettings(); };
+
+// Archief: afgelopen spellen en alle opdrachten die ooit gebruikt zijn.
+async function viewArchive(tab = 'games') {
+  const frame = body => { $('#screen').innerHTML = `<section class="card">
+    <button class="back" data-act="go" data-v="home">‹ Terug</button>
+    <h2>Archief</h2>
+    <div class="tabs"><button class="${tab === 'games' ? 'on' : ''}" data-act="arch" data-tab="games">Spellen</button><button class="${tab === 'tasks' ? 'on' : ''}" data-act="arch" data-tab="tasks">Opdrachten</button></div>
+    ${body}</section>`; };
+  frame('<div class="busy"><div class="spin"></div>Laden…</div>');
+  const [hist, arc] = await Promise.all([db.get('history').catch(() => null), db.get('archive').catch(() => null)]);
+  if (S.view !== 'archive') return;
+  S.archive = arc || {};
+  if (tab === 'tasks') {
+    const list = mergedArchive().sort((a, b) => a.diff - b.diff || a.title.localeCompare(b.title));
+    return frame(`<p class="hint">${list.length} opdrachten. Elke opdracht die in een spel wordt toegevoegd komt hier bij.</p>` +
+      list.map(t => `<div class="titem"><div><b>${esc(t.title)}</b><small>${esc(t.desc)}</small></div><span class="prize">${'⭐'.repeat(t.diff || 1)}</span></div>`).join(''));
+  }
+  const games = Object.values(hist || {}).sort((a, b) => b.date - a.date);
+  frame(games.map(g => `<div class="sub-card">
+      <div><b>📍 ${esc((g.place || '').split(',')[0])}</b> <span class="tag">${g.mode === 'leger' ? 'Leger' : 'Verover'}</span></div>
+      <small>${new Date(g.date).toLocaleDateString('nl-BE', { day: 'numeric', month: 'long', year: 'numeric' })} · ${fmtDur(g.duration)} · ${g.players} deelnemers · ${g.zones} zones</small>
+      ${scoreRows(g.score || [], true)}
+    </div>`).join('') || '<p class="note">Nog geen afgelopen spellen. Een spel komt hier te staan zodra het afgelopen is.</p>');
+}
+A.arch = d => viewArchive(d.tab);
+
+// Bewaart de eindstand in het archief. Elke leiding mag dit doen; het resultaat is hetzelfde.
+function saveHistory() {
+  if (S.histSaved || !Me()?.sup) return;
+  S.histSaved = true;
+  const m = meta();
+  db.set(`history/${m.code}-${m.createdAt}`, {
+    code: m.code, place: m.center.name, mode: m.mode, date: m.startedAt || m.createdAt, duration: m.duration,
+    players: Object.keys(S.room.players).length, zones: zones().length,
+    score: score().map(t => ({ name: t.name, color: t.color, zones: t.zones, power: t.power })),
+  }).catch(e => console.warn(e));
+}
 
 function viewJoin() {
   $('#screen').innerHTML = `<section class="card narrow">
@@ -131,7 +175,8 @@ function leaveRoom(keep) {
   S.unsub.forEach(u => u()); S.unsub = [];
   if (S.map) { S.map.remove(); S.map = null; } S.mapLoading = false; S.posSub = false;
   if (S.watch != null) { navigator.geolocation.clearWatch(S.watch); S.watch = null; }
-  Object.assign(S, { room: null, sheet: null, sel: null, zoneId: null, others: {}, photos: {}, endShown: false });
+  Object.assign(S, { room: null, sheet: null, sel: null, zoneId: null, others: {}, photos: {}, endShown: false, histSaved: false });
+  $('#hud')._h = $('#sheet')._h = $('#screen')._h = null;
   $('#sheet').hidden = true;
   if (!keep) { S.code = ''; ls('code', null); go('home'); }
 }
@@ -163,8 +208,8 @@ async function viewCreate() {
       <label>Centrum van het spel<input id="loc" autocomplete="off" placeholder="Typ een stad, plein of adres…" value="${esc(d.place?.name || '')}"></label>
       <div id="sugg" class="sugg"></div>
       <div id="pmap" class="pmap" hidden></div>
-      <label>Hoe groot? <b id="radv"></b><input type="range" data-f="radius" min="300" max="1500" step="50" value="${d.radius}"></label>
-      <label>Aantal zones: <b id="zcv"></b><input type="range" data-f="zoneCount" min="8" max="40" step="1" value="${d.zoneCount}"></label>
+      <label>Hoe groot? <b id="radv"></b><input type="range" data-f="radius" min="300" max="1500" step="50" value="${d.radius}"><span class="ends"><i>klein</i><i>groot</i></span></label>
+      <label>Aantal zones: <b id="zcv"></b><input type="range" data-f="zoneCount" min="8" max="40" step="1" value="${d.zoneCount}"><span class="ends"><i>8</i><i>40</i></span></label>
       <p class="q">Moeten spelers echt in een zone staan?</p>
       ${seg('gps', [['ja', card('📍', 'Ja, met gps', 'De app controleert de locatie. Aangeraden.')], ['nee', card('👆', 'Nee', 'Op een zone tikken volstaat. Handig om binnen te testen.')]], 'cards')}
     </div>
@@ -176,7 +221,7 @@ async function viewCreate() {
       <p class="hint">De klok start pas wanneer jij het startsein geeft. Je kan later nog tijd bijtellen of het spel stoppen.</p>
       <h2 class="gap">Hoe maken we de groepen?</h2>
       ${seg('teamMode', [['random', card('🎲', 'Willekeurig', 'De app verdeelt iedereen eerlijk bij de start.')], ['manual', card('✋', 'Zelf verdelen', 'Je zet elke speler in de lobby in een groep.')]], 'cards')}
-      <label>Aantal groepen: <b id="tcv"></b><input type="range" data-f="teamCount" min="2" max="8" step="1" value="${d.teamCount}"></label>
+      <label>Aantal groepen: <b id="tcv"></b><input type="range" data-f="teamCount" min="2" max="8" step="1" value="${d.teamCount}"><span class="ends"><i>2</i><i>8</i></span></label>
     </div>
 
     <div class="step" data-step="3">
@@ -261,6 +306,7 @@ function mergedArchive() {
 function syncCreate(changed) {
   const d = S.draft; if (!d || S.view !== 'create') return;
   $$('[data-if]').forEach(el => { const [f, v] = el.dataset.if.split('='); el.hidden = String(d[f]) !== v; });
+  $$('input[type=range]').forEach(r => r.style.setProperty('--p', (r.value - r.min) / (r.max - r.min) * 100 + '%'));
   $('#radv').textContent = `${d.radius} m rond het centrum (±${Math.round(d.radius * 2 / 75)} min wandelen van rand tot rand)`; $('#zcv').textContent = d.zoneCount; $('#tcv').textContent = d.teamCount;
   if (changed === 'radius' && S.pmap && d.place) { S.pmap.setRing(d.place, d.radius); S.pmap.fit(d.place, d.radius); }
 }
@@ -355,6 +401,7 @@ function onRoom() {
     const T = myTeam();
     if (T && ((m.phase === 'travel' && T.arrived) || m.phase === 'playing') && !ls('intro-' + S.code)) { ls('intro-' + S.code, '1'); playIntro(m.mode); }
     if (me.sup) Object.entries(S.room.subs || {}).forEach(([sid, sub]) => { if (sub.status === 'checking' && !sub.aiBy) autoCheck(sid); });
+    if (phase() === 'ended') saveHistory();
     if (phase() === 'ended' && !S.endShown) { S.endShown = true; S.sheet = { t: 'score' }; }
   }
   render();
@@ -370,10 +417,35 @@ function render() {
 
 /* ---------- lobby ---------- */
 function renderLobby() {
-  const m = meta(), me = Me(), host = m.host === S.pid, P = Object.entries(S.room.players);
-  const teamSel = (pid, p) => `<select data-chg="setTeam" data-p="${pid}"><option value="">Groep…</option>${TEAMS.slice(0, m.teamCount).map((t, i) => `<option value="t${i}" ${p.team === 't' + i ? 'selected' : ''}>${t.name}</option>`).join('')}</select>`;
+  const m = meta(), me = Me(), host = m.host === S.pid, P = Object.entries(S.room.players), manual = m.teamMode === 'manual';
   const link = location.origin + location.pathname + '?code=' + m.code;
-  $('#screen').innerHTML = `<section class="card">
+  const teams = TEAMS.slice(0, m.teamCount);
+  const validTeam = p => !!p.team && +p.team.slice(1) < m.teamCount;
+  const row = ([pid, p]) => {
+    const self = pid === S.pid;
+    const role = self && host ? '' : `<select data-chg="setRole" data-p="${pid}">
+      <option value="sup" ${p.sup ? 'selected' : ''}>👑 Leiding</option>
+      ${manual ? `<option value="" ${!p.sup && !validTeam(p) ? 'selected' : ''}>Nog geen groep</option>` + teams.map((t, i) => `<option value="t${i}" ${!p.sup && p.team === 't' + i ? 'selected' : ''}>${t.name}</option>`).join('')
+      : `<option value="play" ${p.sup ? '' : 'selected'}>🎲 Speler</option>`}
+    </select>`;
+    const supTeam = p.sup && p.plays && manual ? `<select data-chg="setTeam" data-p="${pid}"><option value="">Groep…</option>${teams.map((t, i) => `<option value="t${i}" ${p.team === 't' + i ? 'selected' : ''}>${t.name}</option>`).join('')}</select>` : '';
+    return `<div class="prow"><div><b>${esc(p.name)}</b>${self ? ' (jij)' : ''}${pid === m.host ? ' <span class="tag">host</span>' : ''}</div>
+      ${host ? `<div class="pctl">${p.sup ? `<button class="mini ${p.plays ? 'on' : ''}" data-act="togPlays" data-p="${pid}">speelt mee</button>` : ''}${supTeam}${role}</div>`
+      : p.sup && p.plays ? '<span class="tag">speelt mee</span>' : ''}</div>`;
+  };
+  const group = (title, color, list, empty) => `<div class="grp" style="--c:${color}"><h4>${title} <span>${list.length}</span></h4>${list.map(row).join('') || `<p class="hint">${empty}</p>`}</div>`;
+  const sups = P.filter(([, p]) => p.sup), players = P.filter(([, p]) => !p.sup);
+  let groups = group('👑 Leiding', '#5a3d22', sups, '');
+  if (manual) {
+    groups += teams.map((t, i) => {
+      const extra = sups.filter(([, p]) => p.plays && p.team === 't' + i).map(([, p]) => `<p class="hint">👑 ${esc(p.name)} speelt mee</p>`).join('');
+      return group(t.name, t.color, players.filter(([, p]) => p.team === 't' + i), extra ? '' : 'Nog niemand') + extra;
+    }).join('');
+    const rest = players.filter(([, p]) => !validTeam(p));
+    if (rest.length) groups += group('Nog geen groep', '#8a7a5c', rest, '');
+  } else groups += group('🎲 Spelers', '#a3322a', players, 'Nog niemand. Deel de code!') + `<p class="hint">Bij de start worden de spelers willekeurig verdeeld over ${m.teamCount} groepen.</p>`;
+
+  setHTML($('#screen'), `<section class="card">
     <button class="back" data-act="leave">‹ Verlaten</button>
     <p class="sub center">Roomcode</p>
     <div class="bigcode">${m.code}</div>
@@ -385,23 +457,20 @@ function renderLobby() {
     ${m.osm ? '' : `<p class="note">Straatdata was niet bereikbaar: de zones zijn organisch getekend zonder straten te volgen.${host ? ' <button class="btn small" data-act="regen">Opnieuw proberen</button>' : ''}</p>`}
 
     <h3>Deelnemers (${P.length})</h3>
-    ${P.map(([pid, p]) => `<div class="prow">
-      <div><b>${esc(p.name)}</b>${pid === S.pid ? ' (jij)' : ''} ${p.sup ? `<span class="tag">👑 leiding${p.plays ? ' · speelt mee' : ''}</span>` : ''}
-        ${m.teamMode === 'manual' && plays(p) && p.team && !host ? `<span class="tag" style="--c:${TEAMS[+p.team.slice(1)]?.color}">${TEAMS[+p.team.slice(1)]?.name}</span>` : ''}</div>
-      ${host ? `<div class="pctl">
-        ${pid !== S.pid ? `<button class="mini ${p.sup ? 'on' : ''}" data-act="togSup" data-p="${pid}">👑</button>` : ''}
-        ${p.sup ? `<button class="mini ${p.plays ? 'on' : ''}" data-act="togPlays" data-p="${pid}">speelt mee</button>` : ''}
-        ${m.teamMode === 'manual' && plays(p) ? teamSel(pid, p) : ''}
-      </div>` : ''}
-    </div>`).join('')}
+    ${host ? '<p class="hint">Kies per deelnemer of die leiding is of meespeelt. Leiding die ook wil spelen: tik op "speelt mee".</p>' : ''}
+    ${groups}
 
     ${host ? `<h3>Groepen</h3>
       <div class="stepper"><button data-act="teamCount" data-d="-1">−</button><b>${m.teamCount} groepen</b><button data-act="teamCount" data-d="1">+</button></div>
-      <p class="hint">${m.teamMode === 'random' ? 'De groepen worden willekeurig verdeeld bij de start.' : 'Wijs hierboven elke speler een groep toe.'}</p>
       <button class="btn big" data-act="startTravel">Stuur de groepen op pad</button>`
     : `<p class="note">${me.sup ? 'Je bent leiding. ' : ''}Wacht tot de leiding het spel start…</p>`}
-  </section>`;
+  </section>`);
 }
+A.setRole = (d, el) => {
+  const v = el.value, path = `${R()}/players/${d.p}`;
+  if (v === 'sup') db.update(path, { sup: true, plays: false });
+  else db.update(path, { sup: false, plays: true, team: v.startsWith('t') ? v : '' });
+};
 A.regen = async (_, btn) => {
   const m = meta(); btn.disabled = true; btn.textContent = 'Bezig…';
   const { zones: zs, osm } = await generateZones(m.center, m.radius, zones().length);
@@ -409,7 +478,6 @@ A.regen = async (_, btn) => {
   if (!osm) toast('Nog steeds geen straatdata. Probeer het zo meteen opnieuw.');
 };
 A.copy = d => navigator.clipboard?.writeText(d.t).then(() => toast('Link gekopieerd'), () => toast(d.t));
-A.togSup = d => { const p = S.room.players[d.p]; db.update(`${R()}/players/${d.p}`, { sup: !p.sup, plays: p.sup ? true : false }); };
 A.togPlays = d => db.update(`${R()}/players/${d.p}`, { plays: !S.room.players[d.p].plays });
 A.setTeam = (d, el) => db.set(`${R()}/players/${d.p}/team`, el.value);
 A.teamCount = d => db.set(R() + '/meta/teamCount', Math.min(8, Math.max(2, meta().teamCount + +d.d)));
@@ -501,7 +569,7 @@ function renderHud() {
     else banner = S.pos ? 'Je bent buiten het speelveld.' : esc(S.gpsErr || 'Wachten op gps…');
   } else banner = `🏁 <b>Het spel is afgelopen!</b> <button class="btn small" data-act="sheet" data-t="score">Eindstand</button>`;
 
-  $('#hud').innerHTML = `<div class="top">
+  setHTML($('#hud'), `<div class="top">
       <div class="chip" style="--c:${T?.color || '#5a3d22'}">${T ? esc(T.name) : me.sup ? '👑 Leiding' : '…'}</div>
       ${T && m.mode === 'leger' ? `<div class="stat">💰 ${T.money}</div>` : ''}
       <div class="stat" id="timer"></div>
@@ -513,7 +581,7 @@ function renderHud() {
       ${T && m.mode === 'leger' ? `<button data-act="sheet" data-t="shop">🛒<span>Winkel</span></button>` : ''}
       <button data-act="sheet" data-t="score">🏆<span>Stand</span></button>
       ${me.sup ? `<button data-act="sheet" data-t="sup">👑<span>Leiding</span>${pending ? `<i class="badge">${pending}</i>` : ''}</button>` : ''}
-    </nav>`;
+    </nav>`);
   tick();
 }
 
@@ -550,9 +618,9 @@ function renderSheet() {
   const el = $('#sheet'), s = S.sheet; if (!s) { el.hidden = true; return; }
   const body = ({ tasks: shTasks, task: shTask, shop: shShop, zone: shZone, sup: shSup, score: shScore, menu: shMenu })[s.t]();
   const top = $('.sheet-body', el)?.scrollTop || 0;
+  if (el.hidden) el._h = null;
   el.hidden = false;
-  el.innerHTML = `<div class="sheet-card"><button class="x close" data-act="close">✕</button><div class="sheet-body">${body}</div></div>`;
-  $('.sheet-body', el).scrollTop = top;
+  if (setHTML(el, `<div class="sheet-card"><button class="x close" data-act="close">✕</button><div class="sheet-body">${body}</div></div>`)) $('.sheet-body', el).scrollTop = top;
 }
 
 const statusTag = st => ({ uploading: '⏳ wordt verstuurd', checking: '⏳ wordt nagekeken', pending: '⏳ bij de leiding', ai_rejected: '✗ afgekeurd door AI', rejected: '✗ afgekeurd', approved: '✓ goedgekeurd' }[st] || '');
@@ -584,7 +652,7 @@ function shTask() {
   if (S.busy) action = `<div class="busy"><div class="spin"></div>${esc(S.busy)}</div>`;
   else if (ph !== 'playing') action = `<p class="note">${ph === 'ended' ? 'Het spel is afgelopen.' : 'Het spel is nog niet gestart.'}</p>`;
   else if (last?.status === 'checking' || last?.status === 'uploading') action = '<div class="busy"><div class="spin"></div>De scheidsrechter bekijkt jullie bewijs…</div>';
-  else if (last?.status === 'pending') action = '<p class="note">⏳ Jullie bewijs ligt bij de leiding.</p>';
+  else if (last?.status === 'pending') action = `<p class="note">⏳ Jullie bewijs ligt bij de leiding.${last.aiErr ? `<small>De automatische controle lukte niet (${esc(last.aiErr)}), dus de leiding beslist.</small>` : ''}</p>`;
   else if (done) action = '<p class="note">✓ Deze opdracht is al voltooid.</p>';
   else if (m.mode === 'verover' && !z) action = '<p class="note">Ga eerst in een zone staan: de opdracht telt voor de zone waar je bent.</p>';
   else if (last?.status === 'ai_rejected') action = `<p class="note bad">✗ ${esc(last.ai || 'Niet goedgekeurd')}</p><button class="btn alt" data-act="askSup" data-s="${last.id}">Vraag de leiding om te kijken</button>${upload}`;
@@ -610,10 +678,11 @@ async function onFile(tid, file) {
     const key = ls('gkey');
     if (key && media.ai) {
       busy('De scheidsrechter bekijkt je bewijs…');
-      let res = null; try { res = await verify(key, task, media.ai); } catch (e) { console.warn(e); }
+      let res = null, err = '';
+      try { res = await verify(key, task, media.ai); } catch (e) { console.warn(e); err = e.message; }
       if (res?.ok) { await db.update(`${R()}/subs/${sid}`, { ai: res.reden }); await approve(sid); }
       else if (res) await db.update(`${R()}/subs/${sid}`, { status: 'ai_rejected', ai: res.reden });
-      else await db.update(`${R()}/subs/${sid}`, { status: 'pending' });
+      else await db.update(`${R()}/subs/${sid}`, { status: 'pending', aiErr: err });
     } else if (media.video || !media.thumb) await db.update(`${R()}/subs/${sid}`, { status: 'pending' });
     else {
       // Een toestel van de leiding met sleutel pikt dit op; lukt dat niet binnen de minuut, dan beslist de leiding zelf.
@@ -634,7 +703,7 @@ async function autoCheck(sid) {
   const base = `${R()}/subs/${sid}`, code = S.code;
   const claim = await db.tx(base + '/aiBy', v => (v ? undefined : S.pid));
   if (!claim.committed) return;
-  const fallback = () => db.tx(base + '/status', st => (st === 'checking' ? 'pending' : undefined));
+  const fallback = err => { if (err) db.update(base, { aiErr: err }); return db.tx(base + '/status', st => (st === 'checking' ? 'pending' : undefined)); };
   try {
     const sub = S.room.subs[sid], img = await db.get(`photos/${code}/${sid}`);
     if (!img) return fallback();
@@ -642,7 +711,7 @@ async function autoCheck(sid) {
     await db.update(base, { ai: res.reden });
     if (res.ok) await approve(sid);
     else await db.tx(base + '/status', st => (st === 'checking' ? 'ai_rejected' : undefined));
-  } catch (e) { console.warn(e); fallback(); }
+  } catch (e) { console.warn(e); fallback(e.message); }
 }
 
 async function approve(sid) {
@@ -736,11 +805,19 @@ function score() {
     return { id, ...t, zones: own.length, power: own.reduce((a, z) => a + zst(z.id).power, 0) };
   }).sort((a, b) => b.zones - a.zones || b.power - a.power);
 }
+// Gelijke stand (zelfde aantal zones en zelfde sterkte) geeft een gedeelde plaats.
+const sameScore = (a, b) => a.zones === b.zones && a.power === b.power;
+function scoreRows(sc, final) {
+  const winners = sc.filter(t => sameScore(t, sc[0]));
+  const head = !final || !sc.length ? '' : winners.length > 1
+    ? `<div class="winner" style="--c:#5a3d22">🤝 Gelijkspel: ${winners.map(t => esc(t.name)).join(' en ')}</div>`
+    : `<div class="winner" style="--c:${sc[0].color}">👑 ${esc(sc[0].name)} wint!</div>`;
+  return head + sc.map(t => `<div class="srow" style="--c:${t.color}"><span class="rank">${sc.findIndex(o => sameScore(o, t)) + 1}</span><b>${esc(t.name)}</b><span>🗺️ ${t.zones}</span><span>🛡️ ${t.power}</span></div>`).join('');
+}
 function shScore() {
-  const sc = score(), ended = phase() === 'ended';
+  const ended = phase() === 'ended';
   return `<h2>${ended ? '🏁 Eindstand' : 'Stand'}</h2>
-    ${ended && sc[0] ? `<div class="winner" style="--c:${sc[0].color}">👑 ${esc(sc[0].name)} wint!</div>` : ''}
-    ${sc.map((t, i) => `<div class="srow" style="--c:${t.color}"><span class="rank">${i + 1}</span><b>${esc(t.name)}</b><span>🗺️ ${t.zones}</span><span>🛡️ ${t.power}</span></div>`).join('')}
+    ${scoreRows(score(), ended)}
     <p class="hint">Gerangschikt op aantal zones, daarna op totale sterkte.</p>`;
 }
 
@@ -768,7 +845,7 @@ function shSup() {
         <div><span class="tag" style="--c:${T.color}">${esc(T.name)}</span> <b>${esc(t.title)}</b> <span class="prize">${prize(t)}</span></div>
         <small>${esc(t.check || t.desc)}</small>
         <small>door ${esc(s.by)} · ${new Date(s.ts).toLocaleTimeString('nl-BE', { hour: '2-digit', minute: '2-digit' })}${s.video ? ' · 🎥 video (enkel een beeld bewaard)' : ''}${s.zone ? ' · 📍 ' + esc(zoneById(s.zone)?.name) : ''}</small>
-        <small><b>${statusTag(s.status)}</b>${s.ai ? ' · AI: ' + esc(s.ai) : ''}</small>
+        <small><b>${statusTag(s.status)}</b>${s.ai ? ' · AI: ' + esc(s.ai) : ''}${s.aiErr ? ' · AI lukte niet: ' + esc(s.aiErr) : ''}</small>
         ${S.photos[s.id] ? `<img src="${S.photos[s.id]}" alt="bewijs">` : `<button class="btn small ghost" data-act="photo" data-s="${s.id}">📷 Bekijk bewijs</button>`}
         ${open ? `<div class="row"><button class="btn small" data-act="approve" data-s="${s.id}">✓ Goedkeuren</button><button class="btn small alt" data-act="reject" data-s="${s.id}">✗ Afkeuren</button></div>` : ''}
       </div>`; }).join('') || '<p class="note">Nog geen inzendingen.</p>';

@@ -57,8 +57,8 @@ export async function makeMap(el, { center, onZone, flat = false }) {
   map.addSource('zones', { type: 'geojson', data: fc([]) });
   map.addSource('ring', { type: 'geojson', data: fc([]) });
   map.addLayer({ id: 'zfill', type: 'fill', source: 'zones', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': ['get', 'op'] } }, before);
-  map.addLayer({ id: 'zline', type: 'line', source: 'zones', layout: { 'line-join': 'round' }, paint: { 'line-color': '#3b2a17', 'line-width': 2.4, 'line-opacity': 0.8 } }, before);
-  map.addLayer({ id: 'zsel', type: 'line', source: 'zones', filter: ['==', ['get', 'id'], ''], layout: { 'line-join': 'round' }, paint: { 'line-color': '#fffbe8', 'line-width': 5 } }, before);
+  map.addLayer({ id: 'zline', type: 'line', source: 'zones', layout: { 'line-join': 'round' }, paint: { 'line-color': '#3b2a17', 'line-width': 2.6, 'line-opacity': 0.85 } });
+  map.addLayer({ id: 'zsel', type: 'line', source: 'zones', filter: ['==', ['get', 'id'], ''], layout: { 'line-join': 'round' }, paint: { 'line-color': '#fffbe8', 'line-width': 5 } });
   map.addLayer({ id: 'ring', type: 'line', source: 'ring', paint: { 'line-color': '#7a2b22', 'line-width': 3, 'line-dasharray': [2, 2] } });
   if (onZone) map.on('click', 'zfill', e => onZone(e.features[0].properties.id));
 
