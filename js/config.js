@@ -7,4 +7,4 @@ export const firebaseConfig = {
 
 // Adres van het tussenstation (Google Apps Script, zie proxy/Code.gs) dat foto's laat nakijken.
 // De Gemini-sleutel staat daar, niet op deze site. Leeg = de leiding keurt alles zelf goed.
-export const aiProxyUrl = '';
+export const aiProxyUrl = 'https://script.google.com/macros/s/AKfycbyX4p1OuRu0bEoQ23Pp4s-TBhkwuMdFKaInHA7cboeKmxAXEWjJE2-oxRyYqM64ojwn/exec';
