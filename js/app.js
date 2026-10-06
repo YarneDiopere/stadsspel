@@ -103,8 +103,18 @@ async function viewArchive(tab = 'games') {
   S.archive = arc || {};
   if (tab === 'tasks') {
     const list = mergedArchive().sort((a, b) => a.diff - b.diff || a.title.localeCompare(b.title));
-    return frame(`<p class="hint">${list.length} opdrachten. Elke opdracht die in een spel wordt toegevoegd komt hier bij.</p>` +
-      list.map(t => `<div class="titem"><div><b>${esc(t.title)}</b><small>${esc(t.desc)}</small></div><span class="prize">${'⭐'.repeat(t.diff || 1)}</span></div>`).join(''));
+    const ed = S.archEdit, cur = ed && ed !== 'new' ? list.find(t => t.key === ed) : null;
+    const form = !ed ? '<button class="btn alt" data-act="archEdit" data-k="new">+ Nieuwe opdracht</button>' : `<div class="addtask">
+        <b>${cur ? 'Opdracht wijzigen' : 'Nieuwe opdracht'}</b>
+        <input id="at" maxlength="60" placeholder="Titel" value="${esc(cur?.title || '')}">
+        <input id="ad" maxlength="200" placeholder="Wat moeten ze doen?" value="${esc(cur?.desc || '')}">
+        <input id="ac" maxlength="200" placeholder="Wat moet er op de foto te zien zijn?" value="${esc(cur?.check || '')}">
+        <select id="adiff">${[1, 2, 3].map(n => `<option value="${n}" ${(cur?.diff || 1) === n ? 'selected' : ''}>${'⭐'.repeat(n)} ${['Makkelijk', 'Gemiddeld', 'Moeilijk'][n - 1]}</option>`).join('')}</select>
+        <div class="row"><button class="btn" data-act="archSave">Opslaan</button><button class="btn ghost" data-act="archEdit" data-k="">Annuleren</button></div>
+      </div>`;
+    return frame(`<p class="hint">${list.length} opdrachten. Elke opdracht die in een spel wordt toegevoegd komt hier bij.</p>${form}` +
+      list.map(t => `<div class="titem arc"><div><b>${esc(t.title)}</b> ${'⭐'.repeat(t.diff || 1)}<small>${esc(t.desc)}</small></div>
+        <div class="row"><button class="mini" data-act="archEdit" data-k="${esc(t.key)}">✏️</button><button class="mini" data-act="archDel" data-k="${esc(t.key)}" data-t="${esc(t.title)}">🗑️</button></div></div>`).join(''));
   }
   const games = Object.entries(hist || {}).map(([id, g]) => ({ id, ...g })).sort((a, b) => b.date - a.date);
   frame(games.map(g => `<div class="sub-card">
@@ -114,13 +124,25 @@ async function viewArchive(tab = 'games') {
       <div class="row"><button class="btn small ghost" data-act="histRename" data-id="${esc(g.id)}" data-t="${esc(g.title || (g.place || '').split(',')[0])}">✏️ Naam wijzigen</button><button class="btn small ghost" data-act="histDel" data-id="${esc(g.id)}">🗑️ Verwijderen</button></div>
     </div>`).join('') || '<p class="note">Nog geen afgelopen spellen. Een spel komt hier te staan zodra het afgelopen is.</p>');
 }
-A.arch = d => viewArchive(d.tab);
+A.arch = d => { S.archEdit = null; viewArchive(d.tab); };
+A.archEdit = d => { S.archEdit = d.k || null; viewArchive('tasks').then(() => S.archEdit && window.scrollTo(0, 0)); };
+A.archSave = async () => {
+  const title = $('#at').value.trim(); if (!title) return toast('Geef de opdracht een titel');
+  const key = S.archEdit === 'new' ? slug(title) : S.archEdit;
+  await db.set('archive/' + key, withReward({ title, desc: $('#ad').value.trim(), check: $('#ac').value.trim(), diff: +$('#adiff').value }));
+  S.archEdit = null; viewArchive('tasks');
+};
+A.archDel = async d => {
+  if (!await mayDelete() || !confirm(`"${d.t}" uit het archief verwijderen?`)) return;
+  await db.set('archive/' + d.k, { deleted: true, title: d.t });
+  viewArchive('tasks');
+};
 A.histRename = async d => {
   const t = prompt('Naam van dit spel', d.t);
   if (t && t.trim()) { await db.set(`history/${d.id}/title`, t.trim().slice(0, 60)); viewArchive(); }
 };
 A.histDel = async d => {
-  if (confirm('Dit spel uit het archief verwijderen? Dat kan niet ongedaan gemaakt worden.')) { await db.set('history/' + d.id, null); viewArchive(); }
+  if (await mayDelete() && confirm('Dit spel uit het archief verwijderen? Dat kan niet ongedaan gemaakt worden.')) { await db.set('history/' + d.id, null); viewArchive(); }
 };
 
 // Bewaart de eindstand in het archief. Elke leiding mag dit doen; het resultaat is hetzelfde.
@@ -165,6 +187,7 @@ function leaveRoom(keep) {
   S.unsub.forEach(u => u()); S.unsub = [];
   if (S.map) { S.map.remove(); S.map = null; } S.mapLoading = false; S.posSub = false;
   if (S.watch != null) { navigator.geolocation.clearWatch(S.watch); S.watch = null; }
+  S.pendSeen = null;
   Object.assign(S, { room: null, sheet: null, sel: null, zoneId: null, others: {}, photos: {}, endShown: false, histSaved: false });
   $('#hud')._h = $('#sheet')._h = $('#screen')._h = null;
   $('#sheet').hidden = true;
@@ -176,7 +199,7 @@ A.leave = () => { if (confirm('Wil je dit spel verlaten?')) leaveRoom(); };
 const STEPS = ['Start', 'Speelveld', 'Tijd & groepen', 'Opdrachten', 'Overzicht'];
 
 async function viewCreate() {
-  const d = S.draft = S.draft || { step: 0, name: ls('name') || '', hostPlays: 'nee', mode: 'leger', place: null, radius: 600, zoneCount: 18, duration: 120, customDur: 100, teamMode: 'random', teamCount: 4, useArchive: 'ja', gps: 'ja', tasks: [], tdiff: 1 };
+  const d = S.draft = S.draft || { step: 0, name: ls('name') || '', hostPlays: 'nee', mode: 'leger', place: null, radius: 600, zoneCount: 18, duration: 120, customDur: 100, teamMode: 'random', teamCount: 4, useArchive: 'ja', gps: 'ja', tasks: [], tdiff: 1, skip: {} };
   const seg = (f, opts, cls = '') => `<div class="seg ${cls}" data-seg="${f}">${opts.map(([v, l]) => `<button type="button" data-act="seg" data-v="${v}" class="${String(d[f]) === String(v) ? 'on' : ''}">${l}</button>`).join('')}</div>`;
   const card = (icon, title, text) => `<span class="cicon">${icon}</span><span><b>${title}</b><small>${text}</small></span>`;
   $('#screen').innerHTML = `<section class="card wizard">
@@ -217,6 +240,7 @@ async function viewCreate() {
     <div class="step" data-step="3">
       <h2>Welke opdrachten?</h2>
       ${seg('useArchive', [['ja', card('📚', 'Archief + eigen opdrachten', '<span id="arcn">…</span> opdrachten uit vorige spellen, plus wat je hieronder toevoegt.')], ['nee', card('✏️', 'Enkel eigen opdrachten', 'Alleen wat je hieronder zelf toevoegt.')]], 'cards')}
+      <details class="arcbox" data-if="useArchive=ja"><summary>📖 Bekijk het archief en vink af wat je niet wil</summary><div id="arclist"></div></details>
       <p class="q">Eigen opdrachten <span id="ctn"></span></p>
       <div id="ctasks"></div>
       <div class="addtask">
@@ -242,12 +266,12 @@ async function viewCreate() {
   </section>`;
   syncCreate(); renderDraftTasks(); showStep();
   S.archive = await db.get('archive').catch(() => null) || {};
-  const n = $('#arcn'); if (n) n.textContent = mergedArchive().length;
+  renderArcList();
 }
 
 function draftTasks() {
   const d = S.draft;
-  return [...d.tasks, ...(d.useArchive === 'ja' ? mergedArchive().filter(a => !d.tasks.some(t => slug(t.title) === slug(a.title))) : [])];
+  return [...d.tasks, ...(d.useArchive === 'ja' ? mergedArchive().filter(a => !d.skip[a.key] && !d.tasks.some(t => slug(t.title) === slug(a.title))) : [])];
 }
 const draftDuration = () => (S.draft.duration === 'custom' ? Math.max(5, +S.draft.customDur || 60) : S.draft.duration);
 
@@ -286,12 +310,33 @@ A.step = d => {
   S.draft.step = n; showStep();
 };
 
+// Standaardopdrachten uit de code, aangevuld en overschreven door wat in de database staat.
 function mergedArchive() {
   const all = {};
   DEFAULT_TASKS.forEach(t => { all[slug(t.title)] = t; });
   Object.entries(S.archive || {}).forEach(([k, t]) => { all[k] = t; });
-  return Object.values(all);
+  return Object.entries(all).filter(([, t]) => !t.deleted).map(([key, t]) => ({ key, ...t }));
 }
+
+// Verwijderen uit het archief zit achter een wachtwoord (enkel de hash staat in de code).
+const DEL_HASH = 'ae9aa92f1ff9ddcc45c72a701c8b62912ef7544383cef8ef36577c1ec5d51a1b';
+async function mayDelete() {
+  if (S.delOk) return true;
+  const pw = prompt('Wachtwoord om te verwijderen');
+  if (pw == null) return false;
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('stadsspel:' + pw));
+  S.delOk = [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('') === DEL_HASH;
+  if (!S.delOk) toast('Verkeerd wachtwoord');
+  return S.delOk;
+}
+
+function renderArcList() {
+  const el = $('#arclist'); if (!el) return;
+  const d = S.draft, list = mergedArchive().sort((a, b) => a.diff - b.diff || a.title.localeCompare(b.title));
+  $('#arcn').textContent = list.filter(t => !d.skip[t.key]).length;
+  el.innerHTML = list.map(t => `<label class="arcrow"><input type="checkbox" data-chg="arcTog" data-k="${esc(t.key)}" ${d.skip[t.key] ? '' : 'checked'}><span><b>${esc(t.title)}</b> ${'⭐'.repeat(t.diff || 1)}<small>${esc(t.desc)}</small></span></label>`).join('');
+}
+A.arcTog = (d, el) => { if (el.checked) delete S.draft.skip[d.k]; else S.draft.skip[d.k] = true; $('#arcn').textContent = mergedArchive().filter(t => !S.draft.skip[t.key]).length; };
 
 function syncCreate(changed) {
   const d = S.draft; if (!d || S.view !== 'create') return;
@@ -386,6 +431,11 @@ function onRoom() {
   if (S.logSeen) keys.filter(k => !S.logSeen.has(k)).forEach(k => { const l = S.room.log[k]; toast(l.m, S.room.teams?.[l.t]?.color); });
   S.logSeen = new Set(keys);
 
+  // nieuw bewijs dat op de leiding wacht
+  const waiting = Object.entries(S.room.subs || {}).filter(([, s]) => s.status === 'pending');
+  if (S.pendSeen && me.sup) waiting.filter(([id]) => !S.pendSeen.has(id)).forEach(([id, s]) => notifySup(id, s));
+  S.pendSeen = new Set(waiting.map(([id]) => id));
+
   if (m.phase !== 'lobby') {
     if (me.sup && !S.posSub) { S.posSub = true; S.unsub.push(db.on('pos/' + S.code, v => { S.others = v || {}; updateMap(); })); }
     const T = myTeam();
@@ -395,6 +445,25 @@ function onRoom() {
   }
   render();
 }
+
+// Trilling, geluid en (als het mag) een systeemmelding. Werkt zolang de app open of op de achtergrond staat.
+async function notifySup(sid, sub) {
+  const body = `${S.room.teams?.[sub.team]?.name || 'Een groep'} · ${S.room.tasks?.[sub.task]?.title || 'opdracht'}`;
+  try { navigator.vibrate?.([200, 100, 200]); } catch { /* niet ondersteund */ }
+  try {
+    const ac = S.audio || (S.audio = new (window.AudioContext || window.webkitAudioContext)());
+    [0, 0.18].forEach((t, i) => { const o = ac.createOscillator(), g = ac.createGain(); o.frequency.value = i ? 990 : 740; g.gain.value = 0.15; o.connect(g).connect(ac.destination); o.start(ac.currentTime + t); o.stop(ac.currentTime + t + 0.14); });
+  } catch { /* geen geluid */ }
+  if (window.Notification?.permission === 'granted') {
+    try { (await navigator.serviceWorker.ready).showNotification('Nieuw bewijs om na te kijken', { body, tag: 'sub-' + sid, renotify: true }); } catch (e) { console.warn(e); }
+  }
+}
+A.notifOn = async () => {
+  try { S.audio = S.audio || new (window.AudioContext || window.webkitAudioContext)(); } catch { /* geen geluid */ }
+  const r = await Notification.requestPermission();
+  toast(r === 'granted' ? 'Meldingen staan aan' : 'Meldingen zijn geweigerd in je browser');
+  renderSheet();
+};
 
 function render() {
   const inGame = meta().phase !== 'lobby';
@@ -838,6 +907,9 @@ function shSup() {
       ${ph === 'playing' ? `<div class="row"><button class="btn alt" data-act="addTime" data-m="10">+10 min</button><button class="btn alt" data-act="addTime" data-m="-10">−10 min</button></div><button class="btn big" data-act="stopGame">⏹ Stop het spel</button>` : ''}
       ${ph === 'ended' ? '<p class="note">Het spel is afgelopen.</p>' : ''}`;
   }
+  const notif = !('Notification' in window) ? '<p class="hint">🔔 Meldingen: zet deze site eerst op je beginscherm (Deel → Zet op beginscherm) en open ze van daar.</p>'
+    : Notification.permission === 'granted' ? '' : '<button class="btn alt small" data-act="notifOn">🔔 Meldingen bij nieuw bewijs aanzetten</button>';
+  body = notif + body;
   return `<h2>Leiding</h2><div class="tabs">${tabs.map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-act="tab" data-tab="${k}">${l}</button>`).join('')}</div>${body}`;
 }
 A.photo = async d => { S.photos[d.s] = await db.get(`photos/${S.code}/${d.s}`) || 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="60"><text x="10" y="35">Geen beeld beschikbaar</text></svg>'); renderSheet(); };
@@ -857,6 +929,7 @@ A.supAddTask = async () => {
 };
 
 /* ---------- boot ---------- */
+navigator.serviceWorker?.register('sw.js').catch(e => console.warn(e));
 (async () => {
   const saved = ls('code'), link = (params.get('code') || '').toUpperCase();
   if (saved && (!link || link === saved) && await db.get(`rooms/${saved}/players/${S.pid}`).catch(() => null)) return enterRoom(saved);

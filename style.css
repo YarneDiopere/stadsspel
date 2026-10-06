@@ -123,6 +123,14 @@ div.titem { cursor: default; }
 .sumrow b { display: block; }
 .sumrow em { font-style: normal; font-size: .78rem; font-weight: 700; color: var(--red); }
 
+.arcbox { background: #fff6; border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+.arcbox summary { font-weight: 700; cursor: pointer; }
+.arcbox #arclist { max-height: 300px; overflow-y: auto; margin-top: 8px; }
+.arcrow { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; margin: 0; padding: 7px 0; border-bottom: 1px dashed #cdb787; }
+.arcrow input { width: 22px !important; height: 22px; margin: 2px 0 0; flex: none; accent-color: var(--red); padding: 0; }
+.titem.arc .row { flex: none; flex-wrap: nowrap; }
+.titem.arc .mini { font-size: 1rem; padding: 6px 9px; }
+
 /* spel */
 #game { position: fixed; inset: 0; }
 #map { position: absolute; inset: 0; background: #ead9b0; }
