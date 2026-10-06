@@ -1,6 +1,6 @@
 // Bewijs (foto of video) klaarmaken en laten beoordelen door Gemini.
 
-const MODELS = ['gemini-flash-latest', 'gemini-2.5-flash'];
+const MODELS = ['gemini-flash-latest', 'gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-flash-lite-latest'];
 const MAX_VIDEO = 14e6; // inline limiet van Gemini is 20 MB na base64
 
 function toJpeg(src, w, h, max, q) {
@@ -66,10 +66,10 @@ Antwoord enkel met JSON: {"ok": true of false, "reden": "korte uitleg in het Ned
     const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key }, body,
     });
-    if (r.status === 404) { last = new Error('Model niet gevonden'); continue; }
-    if (!r.ok) throw new Error('Gemini ' + r.status);
+    if ([400, 401, 403].includes(r.status)) throw new Error('Gemini ' + r.status);
+    if (!r.ok) { last = new Error('Gemini ' + r.status); continue; } // overbelast of onbekend model: probeer het volgende
     const j = await r.json();
-    const out = JSON.parse(j.candidates[0].content.parts.map(p => p.text || '').join(''));
+    const out = JSON.parse(j.candidates[0].content.parts.filter(p => !p.thought).map(p => p.text || '').join(''));
     return { ok: out.ok === true, reden: String(out.reden || '').slice(0, 200) };
   }
   throw last;

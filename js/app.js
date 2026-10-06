@@ -64,7 +64,7 @@ document.addEventListener('change', e => {
 /* ---------- start, meedoen ---------- */
 function go(view) {
   S.view = view; $('#screen').hidden = false; $('#game').hidden = true;
-  ({ home: viewHome, join: viewJoin, create: viewCreate })[view]();
+  ({ home: viewHome, join: viewJoin, create: viewCreate, settings: viewSettings })[view]();
   window.scrollTo(0, 0);
 }
 A.go = d => go(d.v);
@@ -76,9 +76,30 @@ function viewHome() {
     <p class="sub">Verover de stad, zone per zone</p>
     <button class="btn big" data-act="go" data-v="create">Spel aanmaken</button>
     <button class="btn big alt" data-act="go" data-v="join">Meedoen</button>
+    <button class="btn ghost small" style="margin-top:18px" data-act="go" data-v="settings">⚙️ Instellingen leiding</button>
     ${isLocal ? '<p class="note">Demo-modus: er is nog geen Firebase gekoppeld, dus spellen blijven op dit toestel.</p>' : ''}
   </section>`;
 }
+
+// De sleutel voor de automatische fotocontrole blijft enkel op dit toestel staan.
+function viewSettings() {
+  const has = !!ls('gkey');
+  $('#screen').innerHTML = `<section class="card narrow">
+    <button class="back" data-act="go" data-v="home">‹ Terug</button>
+    <h2>Automatische controle</h2>
+    <p>Bewaar hier één keer je Gemini API-sleutel. Zolang jij als leiding een spel open hebt staan, kijkt jouw toestel de foto's van alle groepen automatisch na.</p>
+    ${has ? '<p class="note">✓ Er is een sleutel bewaard op dit toestel.</p>' : ''}
+    <label>${has ? 'Sleutel vervangen' : 'Gemini API-sleutel'}<input id="gk" type="password" autocomplete="off" placeholder="Plak de sleutel"></label>
+    <button class="btn big" data-act="saveKey">Opslaan</button>
+    ${has ? '<button class="btn big ghost" data-act="clearKey">Sleutel verwijderen</button>' : ''}
+    <p class="hint">De sleutel wordt nergens gedeeld: niet met spelers, niet met de database. Zonder sleutel keurt de leiding alles zelf goed.</p>
+  </section>`;
+}
+A.saveKey = () => {
+  const k = $('#gk').value.trim(); if (k.length < 20) return toast('Dat lijkt geen geldige sleutel');
+  ls('gkey', k); toast('Opgeslagen op dit toestel'); viewSettings();
+};
+A.clearKey = () => { ls('gkey', null); viewSettings(); };
 
 function viewJoin() {
   $('#screen').innerHTML = `<section class="card narrow">
@@ -117,65 +138,118 @@ function leaveRoom(keep) {
 A.leave = () => { if (confirm('Wil je dit spel verlaten?')) leaveRoom(); };
 
 /* ---------- spel aanmaken ---------- */
+const STEPS = ['Start', 'Speelveld', 'Tijd & groepen', 'Opdrachten', 'Overzicht'];
+
 async function viewCreate() {
-  const d = S.draft = S.draft || { name: ls('name') || '', hostPlays: 'nee', mode: 'leger', place: null, radius: 600, zoneCount: 18, duration: 120, customDur: 100, teamMode: 'random', teamCount: 4, useArchive: 'ja', gps: 'ja', key: ls('gkey') || '', tasks: [], tdiff: 1 };
-  const seg = (f, opts) => `<div class="seg" data-seg="${f}">${opts.map(([v, l]) => `<button type="button" data-act="seg" data-v="${v}" class="${String(d[f]) === String(v) ? 'on' : ''}">${l}</button>`).join('')}</div>`;
-  $('#screen').innerHTML = `<section class="card">
-    <button class="back" data-act="go" data-v="home">‹ Terug</button>
-    <h2>Nieuw spel</h2>
+  const d = S.draft = S.draft || { step: 0, name: ls('name') || '', hostPlays: 'nee', mode: 'leger', place: null, radius: 600, zoneCount: 18, duration: 120, customDur: 100, teamMode: 'random', teamCount: 4, useArchive: 'ja', gps: 'ja', tasks: [], tdiff: 1 };
+  const seg = (f, opts, cls = '') => `<div class="seg ${cls}" data-seg="${f}">${opts.map(([v, l]) => `<button type="button" data-act="seg" data-v="${v}" class="${String(d[f]) === String(v) ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+  const card = (icon, title, text) => `<span class="cicon">${icon}</span><span><b>${title}</b><small>${text}</small></span>`;
+  $('#screen').innerHTML = `<section class="card wizard">
+    <button class="back" data-act="go" data-v="home">‹ Annuleren</button>
+    <div class="steps">${STEPS.map((l, i) => `<button type="button" data-act="step" data-n="${i}"><i>${i + 1}</i><span>${l}</span></button>`).join('')}</div>
 
-    <h3>Jij</h3>
-    <label>Je naam<input data-f="name" maxlength="20" placeholder="Voornaam" value="${esc(d.name)}"></label>
-    <p class="hint">Jij bent leiding. Speel je zelf ook mee in een groep?</p>
-    ${seg('hostPlays', [['nee', 'Enkel leiding'], ['ja', 'Ik speel mee']])}
-    <p class="hint">Andere leiding duid je aan in de lobby, zodra iedereen binnen is.</p>
-
-    <h3>Spelmodus</h3>
-    ${seg('mode', [['leger', '⚔️ Leger'], ['verover', '🏰 Verover']])}
-    <p class="hint" data-if="mode=leger">Opdrachten leveren goud op. Met goud koop je soldaten, die je inzet in de zone waar je staat.</p>
-    <p class="hint" data-if="mode=verover">Geen winkel: elke goedgekeurde opdracht telt meteen als sterkte in de zone waar je staat.</p>
-
-    <h3>Speelveld</h3>
-    <label>Centrum van het spel<input id="loc" autocomplete="off" placeholder="Zoek een stad, plein of adres" value="${esc(d.place?.name || '')}"></label>
-    <div id="sugg" class="sugg"></div>
-    <div id="pmap" class="pmap" hidden></div>
-    <label>Straal: <b id="radv"></b><input type="range" data-f="radius" min="300" max="1500" step="50" value="${d.radius}"></label>
-    <label>Aantal zones: <b id="zcv"></b><input type="range" data-f="zoneCount" min="8" max="40" step="1" value="${d.zoneCount}"></label>
-    <p class="hint">Moet je in een zone staan om er iets te doen?</p>
-    ${seg('gps', [['ja', '📍 Ja, gps-controle'], ['nee', 'Nee, tikken volstaat']])}
-
-    <h3>Speelduur</h3>
-    ${seg('duration', [...DURATIONS.map(m => [m, fmtDur(m)]), ['custom', 'Eigen tijd']])}
-    <label data-if="duration=custom">Aantal minuten<input type="number" data-f="customDur" min="5" max="600" value="${d.customDur}"></label>
-
-    <h3>Groepen</h3>
-    ${seg('teamMode', [['random', '🎲 Willekeurig'], ['manual', '✋ Leiding verdeelt']])}
-    <p class="hint" data-if="teamMode=manual">Je wijst iedereen toe in de lobby.</p>
-    <label>Aantal groepen: <b id="tcv"></b><input type="range" data-f="teamCount" min="2" max="8" step="1" value="${d.teamCount}"></label>
-
-    <h3>Opdrachten</h3>
-    ${seg('useArchive', [['ja', `Eigen + archief (<span id="arcn">…</span>)`], ['nee', 'Enkel eigen opdrachten']])}
-    <p class="hint">Het archief bevat de standaardopdrachten en alles wat ooit in een spel is toegevoegd. Nieuwe opdrachten komen er automatisch bij.</p>
-    <div id="ctasks"></div>
-    <div class="addtask">
-      <input id="tt" maxlength="60" placeholder="Titel van de opdracht">
-      <input id="td" maxlength="200" placeholder="Wat moeten ze doen?">
-      <input id="tc" maxlength="200" placeholder="Wat moet er op de foto te zien zijn? (voor de AI)">
-      ${seg('tdiff', [[1, '⭐ Makkelijk'], [2, '⭐⭐ Gemiddeld'], [3, '⭐⭐⭐ Moeilijk']])}
-      <button class="btn alt" type="button" data-act="addDraftTask">+ Opdracht toevoegen</button>
+    <div class="step" data-step="0">
+      <h2>Wie ben jij?</h2>
+      <label>Je naam<input data-f="name" maxlength="20" placeholder="Voornaam" value="${esc(d.name)}"></label>
+      <p class="q">Speel je zelf mee?</p>
+      ${seg('hostPlays', [['nee', card('👑', 'Enkel leiding', 'Je volgt alles op de kaart en keurt opdrachten goed.')], ['ja', card('🏃', 'Ik speel mee', 'Je zit in een groep én je bent leiding.')]], 'cards')}
+      <p class="hint">Andere leiding duid je straks aan in de lobby.</p>
+      <p class="q">Welk spel spelen jullie?</p>
+      ${seg('mode', [['leger', card('⚔️', 'Leger', 'Opdrachten leveren goud op. Daarmee koop je soldaten en val je zones aan.')], ['verover', card('🏰', 'Verover', 'Geen winkel: elke goedgekeurde opdracht versterkt meteen de zone waar je staat.')]], 'cards')}
     </div>
 
-    <h3>Automatische controle</h3>
-    <label>Gemini API-key (optioneel)<input data-f="key" autocomplete="off" placeholder="AIza…" value="${esc(d.key)}"></label>
-    <p class="hint">Gratis aan te maken op aistudio.google.com/apikey. Zonder key keurt de leiding alles zelf goed. De key wordt met de spelers van dit spel gedeeld.</p>
+    <div class="step" data-step="1">
+      <h2>Waar spelen jullie?</h2>
+      <label>Centrum van het spel<input id="loc" autocomplete="off" placeholder="Typ een stad, plein of adres…" value="${esc(d.place?.name || '')}"></label>
+      <div id="sugg" class="sugg"></div>
+      <div id="pmap" class="pmap" hidden></div>
+      <label>Hoe groot? <b id="radv"></b><input type="range" data-f="radius" min="300" max="1500" step="50" value="${d.radius}"></label>
+      <label>Aantal zones: <b id="zcv"></b><input type="range" data-f="zoneCount" min="8" max="40" step="1" value="${d.zoneCount}"></label>
+      <p class="q">Moeten spelers echt in een zone staan?</p>
+      ${seg('gps', [['ja', card('📍', 'Ja, met gps', 'De app controleert de locatie. Aangeraden.')], ['nee', card('👆', 'Nee', 'Op een zone tikken volstaat. Handig om binnen te testen.')]], 'cards')}
+    </div>
 
-    <button class="btn big" data-act="create">Spel aanmaken</button>
+    <div class="step" data-step="2">
+      <h2>Hoe lang duurt het spel?</h2>
+      ${seg('duration', [...DURATIONS.map(m => [m, fmtDur(m)]), ['custom', 'Anders…']], 'grid')}
+      <label data-if="duration=custom">Aantal minuten<input type="number" data-f="customDur" min="5" max="600" value="${d.customDur}"></label>
+      <p class="hint">De klok start pas wanneer jij het startsein geeft. Je kan later nog tijd bijtellen of het spel stoppen.</p>
+      <h2 class="gap">Hoe maken we de groepen?</h2>
+      ${seg('teamMode', [['random', card('🎲', 'Willekeurig', 'De app verdeelt iedereen eerlijk bij de start.')], ['manual', card('✋', 'Zelf verdelen', 'Je zet elke speler in de lobby in een groep.')]], 'cards')}
+      <label>Aantal groepen: <b id="tcv"></b><input type="range" data-f="teamCount" min="2" max="8" step="1" value="${d.teamCount}"></label>
+    </div>
+
+    <div class="step" data-step="3">
+      <h2>Welke opdrachten?</h2>
+      ${seg('useArchive', [['ja', card('📚', 'Archief + eigen opdrachten', '<span id="arcn">…</span> opdrachten uit vorige spellen, plus wat je hieronder toevoegt.')], ['nee', card('✏️', 'Enkel eigen opdrachten', 'Alleen wat je hieronder zelf toevoegt.')]], 'cards')}
+      <p class="q">Eigen opdrachten <span id="ctn"></span></p>
+      <div id="ctasks"></div>
+      <div class="addtask">
+        <input id="tt" maxlength="60" placeholder="Titel, bv. Handtekeningenjacht">
+        <input id="td" maxlength="200" placeholder="Wat moeten ze doen?">
+        <input id="tc" maxlength="200" placeholder="Wat moet er op de foto te zien zijn?">
+        ${seg('tdiff', [[1, '⭐ Makkelijk'], [2, '⭐⭐ Gemiddeld'], [3, '⭐⭐⭐ Moeilijk']])}
+        <button class="btn alt" type="button" data-act="addDraftTask">+ Toevoegen</button>
+      </div>
+      <p class="hint">Nieuwe opdrachten komen automatisch in het archief.</p>
+    </div>
+
+    <div class="step" data-step="4">
+      <h2>Klopt alles?</h2>
+      <div id="summary"></div>
+      <button class="btn big" data-act="create">Spel aanmaken</button>
+    </div>
+
+    <div class="wnav">
+      <button class="btn ghost" type="button" data-act="step" data-rel="-1" id="wprev">‹ Vorige</button>
+      <button class="btn" type="button" data-act="step" data-rel="1" id="wnext">Volgende ›</button>
+    </div>
   </section>`;
-  syncCreate(); renderDraftTasks();
-  if (d.place) showPreview();
+  syncCreate(); renderDraftTasks(); showStep();
   S.archive = await db.get('archive').catch(() => null) || {};
   const n = $('#arcn'); if (n) n.textContent = mergedArchive().length;
 }
+
+function draftTasks() {
+  const d = S.draft;
+  return [...d.tasks, ...(d.useArchive === 'ja' ? mergedArchive().filter(a => !d.tasks.some(t => slug(t.title) === slug(a.title))) : [])];
+}
+const draftDuration = () => (S.draft.duration === 'custom' ? Math.max(5, +S.draft.customDur || 60) : S.draft.duration);
+
+// Geeft de eerste stap terug waar nog iets ontbreekt, of -1.
+function firstInvalid(upTo) {
+  const d = S.draft;
+  if (upTo > 0 && !d.name.trim()) { toast('Vul eerst je naam in'); return 0; }
+  if (upTo > 1 && !d.place) { toast('Kies een centrum uit de suggesties'); return 1; }
+  if (upTo > 3 && !draftTasks().length) { toast('Voeg minstens één opdracht toe of gebruik het archief'); return 3; }
+  return -1;
+}
+
+function showStep() {
+  const d = S.draft, n = d.step;
+  $$('.step').forEach(el => { el.hidden = +el.dataset.step !== n; });
+  $$('.steps button').forEach((b, i) => { b.classList.toggle('on', i === n); b.classList.toggle('done', i < n); });
+  $('#wprev').hidden = n === 0; $('#wnext').hidden = n === STEPS.length - 1;
+  if (n === 1 && d.place) showPreview().then(() => S.pmap?.map.resize());
+  if (n === 4) {
+    const row = (step, icon, label, val) => `<button type="button" class="sumrow" data-act="step" data-n="${step}"><span>${icon}</span><span><small>${label}</small><b>${val}</b></span><em>Wijzig</em></button>`;
+    $('#summary').innerHTML =
+      row(0, '👤', 'Leiding', `${esc(d.name)} · ${d.hostPlays === 'ja' ? 'speelt mee' : 'speelt niet mee'}`) +
+      row(0, d.mode === 'leger' ? '⚔️' : '🏰', 'Spel', d.mode === 'leger' ? 'Leger' : 'Verover') +
+      row(1, '📍', 'Speelveld', `${esc(d.place.name.split(',')[0])} · ${d.radius} m · ${d.zoneCount} zones${d.gps === 'ja' ? '' : ' · zonder gps'}`) +
+      row(2, '⏳', 'Speelduur', fmtDur(draftDuration())) +
+      row(2, '👥', 'Groepen', `${d.teamCount} groepen · ${d.teamMode === 'random' ? 'willekeurig' : 'zelf verdelen'}`) +
+      row(3, '🎯', 'Opdrachten', `${draftTasks().length} opdrachten${d.tasks.length ? ` (${d.tasks.length} eigen)` : ''}`);
+  }
+  window.scrollTo(0, 0);
+}
+A.step = d => {
+  const cur = S.draft.step;
+  let n = d.rel ? cur + +d.rel : +d.n;
+  n = Math.max(0, Math.min(STEPS.length - 1, n));
+  if (n > cur) { const bad = firstInvalid(n); if (bad >= 0) n = bad; }
+  S.draft.step = n; showStep();
+};
 
 function mergedArchive() {
   const all = {};
@@ -187,7 +261,7 @@ function mergedArchive() {
 function syncCreate(changed) {
   const d = S.draft; if (!d || S.view !== 'create') return;
   $$('[data-if]').forEach(el => { const [f, v] = el.dataset.if.split('='); el.hidden = String(d[f]) !== v; });
-  $('#radv').textContent = d.radius + ' m'; $('#zcv').textContent = d.zoneCount; $('#tcv').textContent = d.teamCount;
+  $('#radv').textContent = `${d.radius} m rond het centrum (±${Math.round(d.radius * 2 / 75)} min wandelen van rand tot rand)`; $('#zcv').textContent = d.zoneCount; $('#tcv').textContent = d.teamCount;
   if (changed === 'radius' && S.pmap && d.place) { S.pmap.setRing(d.place, d.radius); S.pmap.fit(d.place, d.radius); }
 }
 
@@ -229,6 +303,7 @@ async function showPreview() {
 }
 
 function renderDraftTasks() {
+  $('#ctn').textContent = S.draft.tasks.length ? `(${S.draft.tasks.length})` : '';
   $('#ctasks').innerHTML = S.draft.tasks.map((t, i) => `<div class="trow"><div><b>${esc(t.title)}</b> ${'⭐'.repeat(t.diff)}<br><small>${esc(t.desc)}</small></div><button class="x" data-act="delDraftTask" data-i="${i}">✕</button></div>`).join('');
 }
 A.addDraftTask = () => {
@@ -244,19 +319,17 @@ const withReward = t => ({ title: t.title, desc: t.desc || '', check: t.check ||
 
 A.create = async (_, btn) => {
   const d = S.draft, name = d.name.trim();
-  if (!name) return toast('Vul je naam in');
-  if (!d.place) return toast('Kies een centrum voor het spel uit de suggesties');
-  const list = [...d.tasks, ...(d.useArchive === 'ja' ? mergedArchive().filter(a => !d.tasks.some(t => slug(t.title) === slug(a.title))) : [])];
-  if (!list.length) return toast('Voeg minstens één opdracht toe of gebruik het archief');
-  const duration = d.duration === 'custom' ? Math.max(5, +d.customDur || 60) : d.duration;
+  const bad = firstInvalid(STEPS.length);
+  if (bad >= 0) { d.step = bad; return showStep(); }
+  const list = draftTasks(), duration = draftDuration();
   btn.disabled = true; btn.textContent = 'De stad wordt verdeeld…';
   try {
     const { zones: zs, osm } = await generateZones(d.place, d.radius, d.zoneCount);
     let code; do { code = Array.from({ length: 4 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ'[Math.random() * 24 | 0]).join(''); } while (await db.get(`rooms/${code}/meta`));
     const tasks = {}; list.forEach((t, i) => { tasks['t' + i] = withReward(t); });
-    ls('name', name); if (d.key) ls('gkey', d.key);
+    ls('name', name);
     await db.set('rooms/' + code, {
-      meta: { code, host: S.pid, mode: d.mode, center: d.place, radius: d.radius, duration, phase: 'lobby', teamMode: d.teamMode, teamCount: d.teamCount, gps: d.gps === 'ja', key: d.key.trim(), osm, createdAt: db.now() },
+      meta: { code, host: S.pid, mode: d.mode, center: d.place, radius: d.radius, duration, phase: 'lobby', teamMode: d.teamMode, teamCount: d.teamCount, gps: d.gps === 'ja', osm, createdAt: db.now() },
       zonesJson: JSON.stringify(zs), tasks,
       players: { [S.pid]: { name, sup: true, plays: d.hostPlays === 'ja', team: '' } },
     });
@@ -281,6 +354,7 @@ function onRoom() {
     if (me.sup && !S.posSub) { S.posSub = true; S.unsub.push(db.on('pos/' + S.code, v => { S.others = v || {}; updateMap(); })); }
     const T = myTeam();
     if (T && ((m.phase === 'travel' && T.arrived) || m.phase === 'playing') && !ls('intro-' + S.code)) { ls('intro-' + S.code, '1'); playIntro(m.mode); }
+    if (me.sup) Object.entries(S.room.subs || {}).forEach(([sid, sub]) => { if (sub.status === 'checking' && !sub.aiBy) autoCheck(sid); });
     if (phase() === 'ended' && !S.endShown) { S.endShown = true; S.sheet = { t: 'score' }; }
   }
   render();
@@ -481,7 +555,7 @@ function renderSheet() {
   $('.sheet-body', el).scrollTop = top;
 }
 
-const statusTag = st => ({ checking: '⏳ wordt bekeken', pending: '⏳ bij de leiding', ai_rejected: '✗ afgekeurd door AI', rejected: '✗ afgekeurd', approved: '✓ goedgekeurd' }[st] || '');
+const statusTag = st => ({ uploading: '⏳ wordt verstuurd', checking: '⏳ wordt nagekeken', pending: '⏳ bij de leiding', ai_rejected: '✗ afgekeurd door AI', rejected: '✗ afgekeurd', approved: '✓ goedgekeurd' }[st] || '');
 const prize = t => meta().mode === 'leger' ? `💰 ${t.reward}` : `⚔️ +${t.diff}`;
 function lastSubs() {
   const last = {};
@@ -509,7 +583,8 @@ function shTask() {
   let action;
   if (S.busy) action = `<div class="busy"><div class="spin"></div>${esc(S.busy)}</div>`;
   else if (ph !== 'playing') action = `<p class="note">${ph === 'ended' ? 'Het spel is afgelopen.' : 'Het spel is nog niet gestart.'}</p>`;
-  else if (last?.status === 'pending' || last?.status === 'checking') action = '<p class="note">⏳ Jullie bewijs ligt bij de leiding.</p>';
+  else if (last?.status === 'checking' || last?.status === 'uploading') action = '<div class="busy"><div class="spin"></div>De scheidsrechter bekijkt jullie bewijs…</div>';
+  else if (last?.status === 'pending') action = '<p class="note">⏳ Jullie bewijs ligt bij de leiding.</p>';
   else if (done) action = '<p class="note">✓ Deze opdracht is al voltooid.</p>';
   else if (m.mode === 'verover' && !z) action = '<p class="note">Ga eerst in een zone staan: de opdracht telt voor de zone waar je bent.</p>';
   else if (last?.status === 'ai_rejected') action = `<p class="note bad">✗ ${esc(last.ai || 'Niet goedgekeurd')}</p><button class="btn alt" data-act="askSup" data-s="${last.id}">Vraag de leiding om te kijken</button>${upload}`;
@@ -530,15 +605,44 @@ async function onFile(tid, file) {
   busy('Bewijs wordt verwerkt…');
   try {
     const media = await prepareMedia(file);
-    const sid = await db.push(R() + '/subs', { team: me.team, task: tid, zone: zone || '', by: me.name, status: 'checking', ts: db.now(), video: media.video });
+    const sid = await db.push(R() + '/subs', { team: me.team, task: tid, zone: zone || '', by: me.name, status: 'uploading', ts: db.now(), video: media.video });
     if (media.thumb) await db.set(`photos/${S.code}/${sid}`, media.thumb);
-    let res = null;
-    if (m.key && media.ai) { busy('De scheidsrechter bekijkt je bewijs…'); try { res = await verify(m.key, task, media.ai); } catch (e) { console.warn(e); } }
-    if (res?.ok) { await db.update(`${R()}/subs/${sid}`, { ai: res.reden }); await approve(sid); }
-    else if (res) await db.update(`${R()}/subs/${sid}`, { status: 'ai_rejected', ai: res.reden });
-    else await db.update(`${R()}/subs/${sid}`, { status: 'pending' });
+    const key = ls('gkey');
+    if (key && media.ai) {
+      busy('De scheidsrechter bekijkt je bewijs…');
+      let res = null; try { res = await verify(key, task, media.ai); } catch (e) { console.warn(e); }
+      if (res?.ok) { await db.update(`${R()}/subs/${sid}`, { ai: res.reden }); await approve(sid); }
+      else if (res) await db.update(`${R()}/subs/${sid}`, { status: 'ai_rejected', ai: res.reden });
+      else await db.update(`${R()}/subs/${sid}`, { status: 'pending' });
+    } else if (media.video || !media.thumb) await db.update(`${R()}/subs/${sid}`, { status: 'pending' });
+    else {
+      // Een toestel van de leiding met sleutel pikt dit op; lukt dat niet binnen de minuut, dan beslist de leiding zelf.
+      await db.update(`${R()}/subs/${sid}`, { status: 'checking' });
+      const path = `${R()}/subs/${sid}/status`;
+      setTimeout(() => db.tx(path, st => (st === 'checking' ? 'pending' : undefined)), 60000);
+    }
   } catch (e) { console.error(e); toast('Er ging iets mis: ' + e.message); }
   busy(null);
+}
+
+// Draait op het toestel van de leiding: kijkt wachtende foto's na met de lokaal bewaarde sleutel.
+const autoChecked = new Set();
+async function autoCheck(sid) {
+  const key = ls('gkey');
+  if (!key || autoChecked.has(sid)) return;
+  autoChecked.add(sid);
+  const base = `${R()}/subs/${sid}`, code = S.code;
+  const claim = await db.tx(base + '/aiBy', v => (v ? undefined : S.pid));
+  if (!claim.committed) return;
+  const fallback = () => db.tx(base + '/status', st => (st === 'checking' ? 'pending' : undefined));
+  try {
+    const sub = S.room.subs[sid], img = await db.get(`photos/${code}/${sid}`);
+    if (!img) return fallback();
+    const res = await verify(key, S.room.tasks[sub.task], { mime: 'image/jpeg', data: img.split(',')[1] });
+    await db.update(base, { ai: res.reden });
+    if (res.ok) await approve(sid);
+    else await db.tx(base + '/status', st => (st === 'checking' ? 'ai_rejected' : undefined));
+  } catch (e) { console.warn(e); fallback(); }
 }
 
 async function approve(sid) {
@@ -657,7 +761,7 @@ function shSup() {
   const tabs = [['subs', 'Inzendingen'], ['teams', 'Groepen'], ['task', 'Opdracht +'], ['spel', 'Spel']];
   let body = '';
   if (tab === 'subs') {
-    const order = { pending: 0, checking: 1, ai_rejected: 2 };
+    const order = { pending: 0, checking: 1, uploading: 1, ai_rejected: 2 };
     const subs = Object.entries(S.room.subs || {}).map(([id, s]) => ({ id, ...s })).sort((a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3) || b.ts - a.ts).slice(0, 40);
     body = subs.map(s => { const t = S.room.tasks[s.task] || {}, T = teams[s.team] || {}, open = s.status !== 'approved' && s.status !== 'rejected';
       return `<div class="sub-card ${open ? '' : 'closed'}">

@@ -80,6 +80,35 @@ input[type=range] { width: 100%; accent-color: var(--red); margin-top: 8px; }
 .stepper button.max { width: auto; padding: 0 8px; background: #0002; color: var(--ink); font-size: .75rem; }
 .stepper b { min-width: 1.4em; text-align: center; }
 
+/* wizard */
+.wizard { padding-bottom: 90px; }
+.steps { display: flex; gap: 4px; margin: 6px 0 20px; }
+.steps button { flex: 1; border: 0; background: none; padding: 0; display: grid; justify-items: center; gap: 4px; position: relative; }
+.steps i { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: #d9c69a; font: 800 .9rem var(--display); font-style: normal; color: var(--ink2); position: relative; z-index: 1; }
+.steps button::before { content: ''; position: absolute; top: 14px; left: -50%; width: 100%; height: 3px; background: #d9c69a; }
+.steps button:first-child::before { display: none; }
+.steps span { font-size: .66rem; font-weight: 700; color: var(--ink2); text-align: center; line-height: 1.1; }
+.steps .on i { background: var(--red); color: #fff; box-shadow: 0 0 0 4px #a3322a33; }
+.steps .on span { color: var(--red); }
+.steps .done i { background: var(--wood); color: #fff; }
+.steps .done::before, .steps .on::before { background: var(--wood); }
+.step h2.gap { margin-top: 1.8rem; }
+.q { font-weight: 700; margin: 1.2rem 0 .3rem; }
+.seg.cards { flex-direction: column; }
+.seg.cards button { display: flex; gap: 12px; align-items: center; text-align: left; white-space: normal; padding: 12px; }
+.seg.cards small { color: inherit; opacity: .75; font-size: .82rem; }
+.seg.cards b { display: block; font-size: 1rem; }
+.cicon { font-size: 1.7rem; flex: none; width: 1.3em; text-align: center; }
+.seg.grid { display: grid; grid-template-columns: repeat(3, 1fr); }
+.wnav { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 10px; justify-content: center; padding: 12px 16px max(12px, env(safe-area-inset-bottom)); background: linear-gradient(transparent, var(--wood2) 35%); z-index: 3; }
+.wnav .btn { flex: 1; max-width: 270px; padding: 13px; font-size: 1.02rem; }
+.wnav .ghost { background: var(--paper); }
+.sumrow { display: flex; width: 100%; gap: 12px; align-items: center; text-align: left; border: 0; background: #fff8; border-radius: 10px; padding: 10px 12px; margin-bottom: 6px; }
+.sumrow > span:first-child { font-size: 1.5rem; width: 1.3em; text-align: center; }
+.sumrow > span:nth-child(2) { flex: 1; }
+.sumrow b { display: block; }
+.sumrow em { font-style: normal; font-size: .78rem; font-weight: 700; color: var(--red); }
+
 /* spel */
 #game { position: fixed; inset: 0; }
 #map { position: absolute; inset: 0; background: #ead9b0; }
