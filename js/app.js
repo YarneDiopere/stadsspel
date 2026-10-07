@@ -1,5 +1,5 @@
 import { db, isLocal } from './db.js';
-import { aiProxyUrl } from './config.js';
+import { aiProxyUrl, vapidKey } from './config.js';
 import { TEAMS, UNITS, DURATIONS, DEFAULT_TASKS, REWARD, START_POWER } from './data.js';
 import { generateZones, zoneAt, pickStarts, dist } from './zones.js';
 import { makeMap } from './map.js';
@@ -30,6 +30,23 @@ function setHTML(el, html) {
   if (el._h === html) return false;
   el._h = html; el.innerHTML = html;
   return true;
+}
+
+// Eigen venster in plaats van de prompt/confirm van de browser.
+// Geeft de ingevulde tekst (of true zonder invulveld) terug, en null bij annuleren.
+function ask({ title, text = '', input = null, ok = 'OK', cancel = 'Annuleren' }) {
+  return new Promise(done => {
+    const el = document.createElement('div');
+    el.className = 'modal';
+    el.innerHTML = `<form class="modal-card"><h2>${esc(title)}</h2>${text ? `<p>${esc(text)}</p>` : ''}
+      ${input ? `<input type="${input.type || 'text'}" maxlength="60" autocomplete="off" placeholder="${esc(input.placeholder || '')}" value="${esc(input.value || '')}">` : ''}
+      <div class="row"><button type="button" class="btn ghost" data-x>${esc(cancel)}</button><button class="btn">${esc(ok)}</button></div></form>`;
+    const inp = $('input', el), close = v => { el.remove(); done(v); };
+    el.onsubmit = e => { e.preventDefault(); close(inp ? inp.value : true); };
+    el.onclick = e => { if (e.target === el || e.target.closest('[data-x]')) close(null); };
+    document.body.appendChild(el);
+    (inp || $('.btn:not(.ghost)', el)).focus();
+  });
 }
 
 /* ---------- state ---------- */
@@ -125,24 +142,27 @@ async function viewArchive(tab = 'games') {
     </div>`).join('') || '<p class="note">Nog geen afgelopen spellen. Een spel komt hier te staan zodra het afgelopen is.</p>');
 }
 A.arch = d => { S.archEdit = null; viewArchive(d.tab); };
-A.archEdit = d => { S.archEdit = d.k || null; viewArchive('tasks').then(() => S.archEdit && window.scrollTo(0, 0)); };
+A.archEdit = async d => { if (d.k && d.k !== 'new' && !await mayEdit()) return; S.archEdit = d.k || null; viewArchive('tasks').then(() => S.archEdit && window.scrollTo(0, 0)); };
 A.archSave = async () => {
   const title = $('#at').value.trim(); if (!title) return toast('Geef de opdracht een titel');
-  const key = S.archEdit === 'new' ? slug(title) : S.archEdit;
+  const isNew = S.archEdit === 'new', key = isNew ? slug(title) || 'x' + rid() : S.archEdit;
+  if (isNew && mergedArchive().some(t => t.key === key)) return toast('Er bestaat al een opdracht met deze titel. Wijzig die, of kies een andere titel.');
+  if (!isNew && !await mayEdit()) return;
   await db.set('archive/' + key, withReward({ title, desc: $('#ad').value.trim(), check: $('#ac').value.trim(), diff: +$('#adiff').value }));
   S.archEdit = null; viewArchive('tasks');
 };
 A.archDel = async d => {
-  if (!await mayDelete() || !confirm(`"${d.t}" uit het archief verwijderen?`)) return;
+  if (!await mayEdit() || !await ask({ title: 'Opdracht verwijderen?', text: `"${d.t}" verdwijnt uit het archief.`, ok: 'Verwijderen' })) return;
   await db.set('archive/' + d.k, { deleted: true, title: d.t });
   viewArchive('tasks');
 };
 A.histRename = async d => {
-  const t = prompt('Naam van dit spel', d.t);
+  if (!await mayEdit()) return;
+  const t = await ask({ title: 'Naam van dit spel', input: { value: d.t }, ok: 'Opslaan' });
   if (t && t.trim()) { await db.set(`history/${d.id}/title`, t.trim().slice(0, 60)); viewArchive(); }
 };
 A.histDel = async d => {
-  if (await mayDelete() && confirm('Dit spel uit het archief verwijderen? Dat kan niet ongedaan gemaakt worden.')) { await db.set('history/' + d.id, null); viewArchive(); }
+  if (await mayEdit() && await ask({ title: 'Spel verwijderen?', text: 'Dit spel verdwijnt uit het archief. Dat kan niet ongedaan gemaakt worden.', ok: 'Verwijderen' })) { await db.set('history/' + d.id, null); viewArchive(); }
 };
 
 // Bewaart de eindstand in het archief. Elke leiding mag dit doen; het resultaat is hetzelfde.
@@ -193,7 +213,7 @@ function leaveRoom(keep) {
   $('#sheet').hidden = true;
   if (!keep) { S.code = ''; ls('code', null); go('home'); }
 }
-A.leave = () => { if (confirm('Wil je dit spel verlaten?')) leaveRoom(); };
+A.leave = async () => { if (await ask({ title: 'Spel verlaten?', text: 'Met de roomcode kan je later opnieuw meedoen.', ok: 'Verlaten' })) leaveRoom(); };
 
 /* ---------- spel aanmaken ---------- */
 const STEPS = ['Start', 'Speelveld', 'Tijd & groepen', 'Opdrachten', 'Overzicht'];
@@ -318,16 +338,24 @@ function mergedArchive() {
   return Object.entries(all).filter(([, t]) => !t.deleted).map(([key, t]) => ({ key, ...t }));
 }
 
-// Verwijderen uit het archief zit achter een wachtwoord (enkel de hash staat in de code).
+// Wijzigen en verwijderen in het archief zit achter een wachtwoord (enkel de hash staat in de code).
+// Eén keer juist ingeven volstaat: daarna onthoudt dit toestel dat het mag.
 const DEL_HASH = 'ae9aa92f1ff9ddcc45c72a701c8b62912ef7544383cef8ef36577c1ec5d51a1b';
-async function mayDelete() {
-  if (S.delOk) return true;
-  const pw = prompt('Wachtwoord om te verwijderen');
+async function mayEdit() {
+  if (ls('edit-ok')) return true;
+  const pw = await ask({ title: '🔒 Wachtwoord', text: 'Het archief wijzigen of iets verwijderen kan enkel met het wachtwoord. Je geeft het op dit toestel maar één keer in.', input: { type: 'password', placeholder: 'Wachtwoord' }, ok: 'Ontgrendelen' });
   if (pw == null) return false;
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('stadsspel:' + pw));
-  S.delOk = [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('') === DEL_HASH;
-  if (!S.delOk) toast('Verkeerd wachtwoord');
-  return S.delOk;
+  const ok = [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('') === DEL_HASH;
+  if (ok) ls('edit-ok', '1'); else toast('Verkeerd wachtwoord');
+  return ok;
+}
+
+// Zet een opdracht uit een spel in het archief, zonder een bestaande met dezelfde titel te overschrijven.
+function archiveAdd(t) {
+  const k = slug(t.title);
+  if (!k || DEFAULT_TASKS.some(d => slug(d.title) === k)) return null;
+  return db.tx('archive/' + k, cur => (cur && !cur.deleted ? undefined : withReward(t)));
 }
 
 function renderArcList() {
@@ -414,7 +442,7 @@ A.create = async (_, btn) => {
       zonesJson: JSON.stringify(zs), tasks,
       players: { [S.pid]: { name, sup: true, plays: d.hostPlays === 'ja', team: '' } },
     });
-    for (const t of d.tasks) await db.set('archive/' + slug(t.title), withReward(t));
+    for (const t of d.tasks) await archiveAdd(t);
     if (S.pmap) { S.pmap.remove(); S.pmap = null; }
     S.draft = null;
     enterRoom(code);
@@ -435,6 +463,7 @@ function onRoom() {
   const waiting = Object.entries(S.room.subs || {}).filter(([, s]) => s.status === 'pending');
   if (S.pendSeen && me.sup) waiting.filter(([id]) => !S.pendSeen.has(id)).forEach(([id, s]) => notifySup(id, s));
   S.pendSeen = new Set(waiting.map(([id]) => id));
+  if (me.sup) pushOn();
 
   if (m.phase !== 'lobby') {
     if (me.sup && !S.posSub) { S.posSub = true; S.unsub.push(db.on('pos/' + S.code, v => { S.others = v || {}; updateMap(); })); }
@@ -458,10 +487,21 @@ async function notifySup(sid, sub) {
     try { (await navigator.serviceWorker.ready).showNotification('Nieuw bewijs om na te kijken', { body, tag: 'sub-' + sid, renotify: true }); } catch (e) { console.warn(e); }
   }
 }
+// Echte pushmeldingen (ook met de gsm op slot) via Firebase Cloud Messaging en het tussenstation.
+// Staat uit zolang config.js geen vapidKey heeft. Het toestel van elke leiding meldt zich per spel aan.
+async function pushOn() {
+  if (!vapidKey || isLocal || S.pushCode === S.code || window.Notification?.permission !== 'granted') return;
+  S.pushCode = S.code;
+  try { const tok = await db.pushToken(vapidKey); if (tok) await db.set(`${R()}/push/${S.pid}`, tok); } catch (e) { console.warn('Pushmeldingen lukken niet', e); }
+}
+function pingSup(sid) {
+  if (aiProxyUrl && vapidKey) fetch(aiProxyUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action: 'notify', code: S.code, sid }) }).catch(e => console.warn(e));
+}
 A.notifOn = async () => {
   try { S.audio = S.audio || new (window.AudioContext || window.webkitAudioContext)(); } catch { /* geen geluid */ }
   const r = await Notification.requestPermission();
   toast(r === 'granted' ? 'Meldingen staan aan' : 'Meldingen zijn geweigerd in je browser');
+  pushOn();
   renderSheet();
 };
 
@@ -650,6 +690,7 @@ function tick() {
     if (Me()?.sup) db.set(R() + '/meta/phase', 'ended');
     else if (!S.endShown) onRoom();
   }
+  if (!S.busy && (S.sheet?.t === 'task' || S.sheet?.t === 'tasks')) renderSheet(); // zodat een vastgelopen inzending vanzelf vrijkomt
 }
 setInterval(tick, 1000);
 
@@ -659,7 +700,7 @@ A.openZone = d => { S.sel = d.z; S.deploy = {}; openSheet({ t: 'zone', zid: d.z 
 
 A.startGame = async () => {
   const teams = S.room.teams || {}, waiting = Object.values(teams).filter(t => !t.arrived).map(t => t.name);
-  if (waiting.length && !confirm(`Nog niet op het startpunt: ${waiting.join(', ')}. Toch starten?`)) return;
+  if (waiting.length && !await ask({ title: 'Toch starten?', text: `Nog niet op het startpunt: ${waiting.join(', ')}.`, ok: 'Start het spel' })) return;
   const now = db.now(), upd = { 'meta/phase': 'playing', 'meta/startedAt': now, 'meta/endsAt': now + meta().duration * 60000 };
   Object.entries(teams).forEach(([id, t]) => { upd['zstate/' + t.start] = { owner: id, power: START_POWER }; upd[`teams/${id}/arrived`] = true; });
   await db.update(R(), upd);
@@ -685,7 +726,10 @@ function renderSheet() {
   S.sheetKey = s.t + (s.id || s.zid || s.tab || '');
 }
 
-const statusTag = st => ({ uploading: '⏳ wordt verstuurd', checking: '⏳ wordt nagekeken', pending: '⏳ bij de leiding', ai_rejected: '✗ afgekeurd door AI', rejected: '✗ afgekeurd', approved: '✓ goedgekeurd' }[st] || '');
+// Een inzending die na anderhalve minuut nog niet nagekeken is, is onderweg blijven steken (app gesloten, geen bereik).
+const STUCK_MS = 90000;
+const subState = s => ((s.status === 'uploading' || s.status === 'checking') && db.now() - s.ts > STUCK_MS ? 'stuck' : s.status);
+const statusTag = st => ({ uploading: '⏳ wordt verstuurd', checking: '⏳ wordt nagekeken', stuck: '⚠ controle onderbroken', pending: '⏳ bij de leiding', ai_rejected: '✗ afgekeurd door AI', rejected: '✗ afgekeurd', approved: '✓ goedgekeurd' }[st] || '');
 const prize = t => meta().mode === 'leger' ? `💰 ${t.reward}` : `⚔️ +${t.diff}`;
 function lastSubs() {
   const last = {};
@@ -700,7 +744,7 @@ function shTasks() {
   list.sort((a, b) => (allDone ? 0 : !!done[a.id] - !!done[b.id]) || a.diff - b.diff);
   return `<h2>Opdrachten</h2>
     <p class="hint">${meta().mode === 'leger' ? 'Elke goedgekeurde opdracht levert goud op.' : 'Elke goedgekeurde opdracht telt als sterkte in de zone waar je staat.'}${allDone ? ' Alles gedaan: je mag opnieuw beginnen.' : ''}</p>
-    ${list.map(t => { const d = done[t.id] && !allDone, st = last[t.id]?.status; return `<button class="titem ${d ? 'done' : ''}" data-act="openTask" data-id="${t.id}">
+    ${list.map(t => { const d = done[t.id] && !allDone, st = last[t.id] && subState(last[t.id]); return `<button class="titem ${d ? 'done' : ''}" data-act="openTask" data-id="${t.id}">
       <div><b>${esc(t.title)}</b><small>${esc(t.desc)}</small>${d ? '<em>✓ voltooid</em>' : st && st !== 'approved' ? `<em>${statusTag(st)}</em>` : ''}</div><span class="prize">${prize(t)}</span></button>`; }).join('')}`;
 }
 A.openTask = d => openSheet({ t: 'task', id: d.id });
@@ -708,23 +752,24 @@ A.openTask = d => openSheet({ t: 'task', id: d.id });
 function shTask() {
   const t = S.room.tasks[S.sheet.id], T = myTeam(), last = lastSubs()[S.sheet.id], m = meta(), ph = phase();
   const list = Object.keys(S.room.tasks), allDone = list.every(id => T.done?.[id]);
-  const done = T.done?.[S.sheet.id] && !allDone, zid = target(), z = zid && zoneById(zid);
+  const done = T.done?.[S.sheet.id] && !allDone, zid = target(), z = zid && zoneById(zid), st = last && subState(last);
   const upload = `<label class="btn big filebtn">📷 Foto of filmpje maken<input type="file" accept="image/*,video/*" capture="environment" data-file="${S.sheet.id}" hidden></label><p class="hint">Filmpjes: hou ze korter dan 15 seconden.</p>`;
   let action;
   if (S.busy) action = `<div class="busy"><div class="spin"></div>${esc(S.busy)}</div>`;
   else if (ph !== 'playing') action = `<p class="note">${ph === 'ended' ? 'Het spel is afgelopen.' : 'Het spel is nog niet gestart.'}</p>`;
-  else if (last?.status === 'checking' || last?.status === 'uploading') action = '<div class="busy"><div class="spin"></div>De scheidsrechter bekijkt jullie bewijs…</div>';
-  else if (last?.status === 'pending') action = `<p class="note">⏳ Jullie bewijs ligt bij de leiding.${last.aiErr ? `<small>De automatische controle lukte niet (${esc(last.aiErr)}), dus de leiding beslist.</small>` : ''}</p>`;
+  else if (st === 'checking' || st === 'uploading') action = '<div class="busy"><div class="spin"></div>De scheidsrechter bekijkt jullie bewijs…</div>';
+  else if (st === 'pending') action = `<p class="note">⏳ Jullie bewijs ligt bij de leiding.${last.aiErr ? `<small>De automatische controle lukte niet (${esc(last.aiErr)}), dus de leiding beslist.</small>` : ''}</p>`;
   else if (done) action = '<p class="note">✓ Deze opdracht is al voltooid.</p>';
   else if (m.mode === 'verover' && !z) action = '<p class="note">Ga eerst in een zone staan: de opdracht telt voor de zone waar je bent.</p>';
-  else if (last?.status === 'ai_rejected') action = `<p class="note bad">✗ ${esc(last.ai || 'Niet goedgekeurd')}</p><button class="btn alt" data-act="askSup" data-s="${last.id}">Vraag de leiding om te kijken</button>${upload}`;
-  else action = (last?.status === 'rejected' ? '<p class="note bad">✗ Afgekeurd door de leiding. Probeer opnieuw.</p>' : '') + upload;
+  else if (st === 'stuck') action = `<p class="note bad">⚠ De controle van jullie bewijs is onderbroken. Probeer opnieuw, of laat de leiding kijken.</p><button class="btn alt" data-act="askSup" data-s="${last.id}">Vraag de leiding om te kijken</button>${upload}`;
+  else if (st === 'ai_rejected') action = `<p class="note bad">✗ ${esc(last.ai || 'Niet goedgekeurd')}</p><button class="btn alt" data-act="askSup" data-s="${last.id}">Vraag de leiding om te kijken</button>${upload}`;
+  else action = (st === 'rejected' ? '<p class="note bad">✗ Afgekeurd door de leiding. Probeer opnieuw.</p>' : '') + upload;
   return `<button class="back" data-act="sheet" data-t="tasks">‹ Alle opdrachten</button>
     <h2>${esc(t.title)}</h2><p>${esc(t.desc)}</p>
     <div class="facts"><span>${'⭐'.repeat(t.diff)}</span><span>${prize(t)}</span>${m.mode === 'verover' && z ? `<span>📍 voor ${esc(z.name)}</span>` : ''}</div>
     ${action}`;
 }
-A.askSup = d => db.update(`${R()}/subs/${d.s}`, { status: 'pending' });
+A.askSup = async d => { await db.update(`${R()}/subs/${d.s}`, { status: 'pending' }); pingSup(d.s); };
 
 async function onFile(tid, file) {
   const task = S.room.tasks[tid], me = Me(), m = meta();
@@ -743,8 +788,8 @@ async function onFile(tid, file) {
       try { res = await verify(aiProxyUrl, S.code, task, media.ai); } catch (e) { console.warn(e); err = e.message; }
       if (res?.ok) { await db.update(`${R()}/subs/${sid}`, { ai: res.reden }); await approve(sid); }
       else if (res) await db.update(`${R()}/subs/${sid}`, { status: 'ai_rejected', ai: res.reden });
-      else await db.update(`${R()}/subs/${sid}`, { status: 'pending', aiErr: err });
-    } else await db.update(`${R()}/subs/${sid}`, { status: 'pending' });
+      else { await db.update(`${R()}/subs/${sid}`, { status: 'pending', aiErr: err }); pingSup(sid); }
+    } else { await db.update(`${R()}/subs/${sid}`, { status: 'pending' }); pingSup(sid); }
   } catch (e) { console.error(e); toast('Er ging iets mis: ' + e.message); }
   busy(null);
 }
@@ -877,8 +922,8 @@ function shSup() {
   const tabs = [['subs', 'Inzendingen'], ['teams', 'Groepen'], ['task', 'Opdracht +'], ['spel', 'Spel']];
   let body = '';
   if (tab === 'subs') {
-    const order = { pending: 0, checking: 1, uploading: 1, ai_rejected: 2 };
-    const subs = Object.entries(S.room.subs || {}).map(([id, s]) => ({ id, ...s })).sort((a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3) || b.ts - a.ts).slice(0, 40);
+    const order = { pending: 0, stuck: 0, checking: 1, uploading: 1, ai_rejected: 2 };
+    const subs = Object.entries(S.room.subs || {}).map(([id, s]) => ({ id, ...s, status: subState(s) })).sort((a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3) || b.ts - a.ts).slice(0, 40);
     body = subs.map(s => { const t = S.room.tasks[s.task] || {}, T = teams[s.team] || {}, open = s.status !== 'approved' && s.status !== 'rejected';
       return `<div class="sub-card ${open ? '' : 'closed'}">
         <div><span class="tag" style="--c:${T.color}">${esc(T.name)}</span> <b>${esc(t.title)}</b> <span class="prize">${prize(t)}</span></div>
@@ -918,15 +963,34 @@ A.reject = d => db.tx(`${R()}/subs/${d.s}/status`, s => (s === 'approved' ? unde
 A.money = d => db.tx(`${R()}/teams/${d.t}/money`, v => Math.max(0, (v || 0) + +d.d));
 A.markArrived = d => db.set(`${R()}/teams/${d.t}/arrived`, true);
 A.addTime = d => db.tx(R() + '/meta/endsAt', v => (v ? v + d.m * 60000 : undefined));
-A.stopGame = () => { if (confirm('Het spel nu stopzetten?')) { db.set(R() + '/meta/phase', 'ended'); log('De leiding heeft het spel stopgezet.'); } };
+A.stopGame = async () => { if (await ask({ title: 'Spel stopzetten?', text: 'De tijd stopt en de eindstand wordt getoond.', ok: 'Stopzetten' })) { db.set(R() + '/meta/phase', 'ended'); log('De leiding heeft het spel stopgezet.'); } };
 A.supAddTask = async () => {
   const title = $('#st').value.trim(); if (!title) return toast('Geef de opdracht een titel');
   const t = withReward({ title, desc: $('#sd').value.trim(), check: $('#sc').value.trim(), diff: +$('#sdiff').value });
   await db.set(`${R()}/tasks/x${rid()}`, t);
-  await db.set('archive/' + slug(title), t);
+  await archiveAdd(t);
   log(`Nieuwe opdracht: "${title}"`);
   S.sheet.tab = 'subs'; renderSheet();
 };
+
+/* ---------- opruimen ---------- */
+// Verwijdert spellen die al een tijd voorbij zijn, samen met hun foto's en posities, zodat de database niet volloopt.
+// De eindstand blijft bewaard in het archief (history). Loopt hoogstens één keer per dag per toestel.
+const KEEP_ENDED = 7 * 864e5, KEEP_IDLE = 30 * 864e5;
+async function cleanup() {
+  const now = db.now();
+  if (now - +(ls('cleaned') || 0) < 864e5) return;
+  ls('cleaned', now);
+  const [rooms, photos, pos] = await Promise.all(['rooms', 'photos', 'pos'].map(p => db.keys(p)));
+  const keep = new Set();
+  for (const code of rooms) {
+    const m = await db.get(`rooms/${code}/meta`);
+    const over = m && (m.phase === 'ended' || (m.phase === 'playing' && now > m.endsAt));
+    const old = !m || (over ? now - Math.min(now, m.endsAt || m.createdAt) > KEEP_ENDED : now - m.createdAt > KEEP_IDLE);
+    if (old && code !== S.code) await db.set('rooms/' + code, null); else keep.add(code);
+  }
+  for (const code of new Set([...photos, ...pos])) if (!keep.has(code)) { await db.set('photos/' + code, null); await db.set('pos/' + code, null); }
+}
 
 /* ---------- boot ---------- */
 navigator.serviceWorker?.register('sw.js').catch(e => console.warn(e));
@@ -935,3 +999,4 @@ navigator.serviceWorker?.register('sw.js').catch(e => console.warn(e));
   if (saved && (!link || link === saved) && await db.get(`rooms/${saved}/players/${S.pid}`).catch(() => null)) return enterRoom(saved);
   go(link ? 'join' : 'home');
 })();
+setTimeout(() => cleanup().catch(e => console.warn('Opruimen lukt niet', e)), 4000);

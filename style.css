@@ -227,3 +227,10 @@ div.titem { cursor: default; }
 .in-math b { color: #e86a5e; } .in-math b.def { color: #6fa8f0; } .in-math b.win { color: var(--gold); font-size: 84px; }
 
 @media (min-width: 700px) { .sheet-card { border-radius: 18px; margin-bottom: 20px; } #sheet { align-items: center; } }
+
+/* eigen venster (wachtwoord, bevestigen) */
+.modal { position: fixed; inset: 0; z-index: 40; background: #000a; display: grid; place-items: center; padding: 20px; }
+.modal-card { width: 100%; max-width: 380px; background: var(--paper); border-radius: 16px; padding: 20px 18px 18px; box-shadow: 0 0 0 3px #cdb787 inset, 0 12px 40px #000a; animation: up .18s ease-out; }
+.modal-card p { margin: .3rem 0 .7rem; font-size: .93rem; }
+.modal-card .row { margin-top: 14px; flex-wrap: nowrap; }
+.modal-card .row .btn { flex: 1; }

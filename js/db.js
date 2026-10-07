@@ -23,11 +23,16 @@ async function firebaseDb(cfg) {
   return {
     on(p, cb) { const r = d.ref(p), f = s => cb(s.val()); r.on('value', f); return () => r.off('value', f); },
     get: p => d.ref(p).get().then(s => s.val()),
+    keys: p => fetch(`${cfg.databaseURL}/${p}.json?shallow=true`).then(r => r.json()).then(o => Object.keys(o || {})),
     set: (p, v) => d.ref(p).set(v),
     update: (p, o) => d.ref(p).update(o),
     push(p, v) { const r = d.ref(p).push(); return r.set(v).then(() => r.key); },
     tx: (p, fn) => d.ref(p).transaction(fn).then(r => ({ committed: r.committed, value: r.snapshot.val() })),
     now: () => Date.now() + off,
+    async pushToken(vapidKey) {
+      await loadScript(FB + 'firebase-messaging-compat.js');
+      return window.firebase.messaging().getToken({ vapidKey, serviceWorkerRegistration: await navigator.serviceWorker.ready });
+    },
   };
 }
 
@@ -66,6 +71,8 @@ function localDb() {
       return () => subs.delete(s);
     },
     get: async p => clone(getP(p)),
+    keys: async p => Object.keys(getP(p) || {}),
+    pushToken: async () => null,
     async set(p, v) { tree = load(); setP(p, clone(v)); commit(); },
     async update(p, o) { tree = load(); for (const k in o) setP(p + '/' + k, clone(o[k])); commit(); },
     async push(p, v) { const k = Date.now().toString(36) + (n++).toString(36) + Math.random().toString(36).slice(2, 6); await this.set(p + '/' + k, v); return k; },

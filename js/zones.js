@@ -3,7 +3,7 @@ import { Delaunay } from 'https://cdn.jsdelivr.net/npm/d3-delaunay@6/+esm';
 // Verdeelt een cirkel rond het centrum in zones: organische (Voronoi) gebieden
 // waarvan de kernen op echte plekken liggen en de grenzen langs echte straten lopen.
 
-const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
+const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter', 'https://overpass.private.coffee/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
 const RIM_N = 64;
 
 export function dist(a, b) { // meter tussen twee {lat,lng}
@@ -39,17 +39,22 @@ out geom;
   nwr["railway"="station"]["name"]${a};
 );
 out center tags;`;
-  let last;
-  for (const url of OVERPASS) {
+  // De servers krijgen de vraag om de 3 s na elkaar en het eerste bruikbare antwoord telt,
+  // zodat één trage of onbereikbare server het aanmaken niet ophoudt.
+  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 30000);
+  const ask = async (url, i) => {
+    await new Promise(r => setTimeout(r, i * 3000));
+    if (ctl.signal.aborted) throw new Error('niet meer nodig');
     try {
-      const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 12000);
-      const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), signal: ctl.signal });
-      clearTimeout(to);
+      const r = await fetch(url, { method: 'POST', body: new URLSearchParams({ data: q }), signal: ctl.signal });
       if (!r.ok) throw new Error('Overpass ' + r.status);
-      return await r.json();
-    } catch (e) { last = e; console.warn(url, e); }
-  }
-  throw last;
+      const j = await r.json();
+      if (!j.elements?.some(e => e.type === 'way')) throw new Error('Overpass gaf geen straten');
+      return j;
+    } catch (e) { if (!ctl.signal.aborted) console.warn(url, e); throw e; }
+  };
+  try { return await Promise.any(OVERPASS.map(ask)); }
+  finally { clearTimeout(to); ctl.abort(); }
 }
 
 function parseOsm(osm, proj) {
