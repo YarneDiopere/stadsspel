@@ -256,3 +256,5 @@ div.titem { cursor: default; }
 .marcher { width: 26px; height: 30px; pointer-events: none; z-index: 3; }
 .marcher .fig { animation: march .32s ease-in-out infinite alternate; }
 @keyframes march { from { transform: translateY(0) rotate(-5deg); } to { transform: translateY(-4px) rotate(5deg); } }
+.row.give { flex-wrap: nowrap; margin-top: 6px; }
+.row.give select { flex: 1; min-width: 0; margin: 0; }
