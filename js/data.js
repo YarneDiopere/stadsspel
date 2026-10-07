@@ -10,9 +10,12 @@ export const TEAMS = [
 ];
 
 export const UNITS = [
-  { id: 'a', name: 'Schildknaap', icon: '🛡️', power: 1, price: 15, desc: 'Goedkoop en trouw.' },
-  { id: 'b', name: 'Ridder', icon: '⚔️', power: 3, price: 40, desc: 'Telt voor drie.' },
-  { id: 'c', name: 'Kanon', icon: '💣', power: 7, price: 85, desc: 'Blaast een zone open.' },
+  { id: 'a', fig: 'squire', name: 'Schildknaap', power: 1, price: 15, desc: 'Goedkoop en trouw.' },
+  { id: 'd', fig: 'archer', name: 'Boogschutter', power: 2, price: 28, desc: 'Raakt van ver.' },
+  { id: 'b', fig: 'knight', name: 'Ridder', power: 3, price: 40, desc: 'Telt voor drie.' },
+  { id: 'e', fig: 'rider', name: 'Ruiter', power: 5, price: 62, desc: 'Stormt een zone binnen.' },
+  { id: 'c', fig: 'cannon', name: 'Kanon', power: 7, price: 85, desc: 'Blaast een zone open.' },
+  { id: 'f', fig: 'tower', name: 'Belegeringstoren', power: 12, price: 140, desc: 'Het zwaarste geschut.' },
 ];
 
 export const DURATIONS = [30, 45, 60, 90, 120, 150, 180, 240];

@@ -234,3 +234,25 @@ div.titem { cursor: default; }
 .modal-card p { margin: .3rem 0 .7rem; font-size: .93rem; }
 .modal-card .row { margin-top: 14px; flex-wrap: nowrap; }
 .modal-card .row .btn { flex: 1; }
+
+/* winkel en speelstukken */
+.fig { display: block; height: 100%; filter: drop-shadow(0 2px 2px #0004); }
+.shophead { display: flex; align-items: center; justify-content: space-between; padding-right: 34px; }
+.purse { background: linear-gradient(#f3d27a, var(--gold)); color: #3b2a17; font-weight: 800; border-radius: 99px; padding: 4px 14px; box-shadow: 0 2px 0 #8f6a1a, 0 0 0 2px #fff6 inset; }
+.shop { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 10px; }
+.ucard { position: relative; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 2px; padding: 12px 8px 10px; border-radius: 14px; background: radial-gradient(ellipse at 50% 28%, #fffdf3, #f0deb3 78%); box-shadow: 0 0 0 1.5px #cdb787 inset, 0 3px 0 #cdb787; }
+.ucard .fig { height: 92px; margin-bottom: 2px; transition: transform .15s; }
+.ucard:active .fig { transform: translateY(-4px) scale(1.05); }
+.ucard.poor .fig { filter: grayscale(.7) opacity(.65); }
+.ucard b { font: 800 .92rem var(--display); }
+.ucard small { min-height: 2.2em; line-height: 1.15; }
+.upow, .uown { position: absolute; top: 8px; font-weight: 800; font-size: .78rem; border-radius: 99px; padding: 2px 8px; }
+.upow { right: 8px; background: var(--ink); color: #fff; }
+.uown { left: 8px; background: var(--ok); color: #fff; }
+.ucard .ubuy { margin-top: 6px; width: 100%; }
+.ucard .ubuy .btn { flex: 1; padding: 8px 4px; white-space: nowrap; }
+.ucard .ubuy .btn.alt { flex: 0 0 auto; padding: 8px 10px; }
+.uicon .fig { height: 46px; }
+.marcher { width: 26px; height: 30px; pointer-events: none; z-index: 3; }
+.marcher .fig { animation: march .32s ease-in-out infinite alternate; }
+@keyframes march { from { transform: translateY(0) rotate(-5deg); } to { transform: translateY(-4px) rotate(5deg); } }

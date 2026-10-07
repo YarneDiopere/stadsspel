@@ -3,7 +3,8 @@ import { Delaunay } from 'https://cdn.jsdelivr.net/npm/d3-delaunay@6/+esm';
 // Verdeelt een cirkel rond het centrum in zones: organische (Voronoi) gebieden
 // waarvan de kernen op echte plekken liggen en de grenzen langs echte straten lopen.
 
-const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter', 'https://overpass.private.coffee/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
+const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.openstreetmap.fr/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
+const TILEJSON = 'https://tiles.openfreemap.org/planet';
 const RIM_N = 64;
 
 export function dist(a, b) { // meter tussen twee {lat,lng}
@@ -39,11 +40,11 @@ out geom;
   nwr["railway"="station"]["name"]${a};
 );
 out center tags;`;
-  // De servers krijgen de vraag om de 3 s na elkaar en het eerste bruikbare antwoord telt,
-  // zodat één trage of onbereikbare server het aanmaken niet ophoudt.
-  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 30000);
+  // De servers krijgen de vraag kort na elkaar en het eerste bruikbare antwoord telt.
+  // Na 9 s geven we het op: dan komen de straten uit de kaarttegels (zie fetchTiles).
+  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 9000);
   const ask = async (url, i) => {
-    await new Promise(r => setTimeout(r, i * 3000));
+    await new Promise(r => setTimeout(r, i * 1500));
     if (ctl.signal.aborted) throw new Error('niet meer nodig');
     try {
       const r = await fetch(url, { method: 'POST', body: new URLSearchParams({ data: q }), signal: ctl.signal });
@@ -55,6 +56,47 @@ out center tags;`;
   };
   try { return await Promise.any(OVERPASS.map(ask)); }
   finally { clearTimeout(to); ctl.abort(); }
+}
+
+// Terugval: dezelfde gegevens uit de vectortegels van de kaart zelf (OpenFreeMap). Die zijn veel betrouwbaarder
+// bereikbaar dan Overpass. Het resultaat heeft dezelfde vorm als een Overpass-antwoord, zodat parseOsm het kan lezen.
+const ROAD = /^(primary|secondary|tertiary|minor)$/;
+const POI = /^(place_of_worship|town_hall|library|college|university|museum|attraction|castle|monument|park|railway|theatre|stadium)$/;
+async function fetchTiles(c, R) {
+  const [{ VectorTile }, { default: Pbf }, tj] = await Promise.all([
+    import('https://cdn.jsdelivr.net/npm/@mapbox/vector-tile@1.3.1/+esm'),
+    import('https://cdn.jsdelivr.net/npm/pbf@3.2.1/+esm'),
+    fetch(TILEJSON).then(r => r.json()),
+  ]);
+  const Z = 14, n = 2 ** Z, m = R + 80;
+  const tx = lng => Math.floor((lng + 180) / 360 * n);
+  const ty = lat => Math.floor((1 - Math.asinh(Math.tan(lat * Math.PI / 180)) / Math.PI) / 2 * n);
+  const dLat = m / 110540, dLng = m / (111320 * Math.cos(c.lat * Math.PI / 180));
+  const jobs = [];
+  for (let x = tx(c.lng - dLng); x <= tx(c.lng + dLng); x++) for (let y = ty(c.lat + dLat); y <= ty(c.lat - dLat); y++) jobs.push([x, y]);
+  const elements = [], near = (lon, lat) => dist(c, { lat, lng: lon }) < m;
+  await Promise.all(jobs.map(async ([x, y]) => {
+    const r = await fetch(tj.tiles[0].replace('{z}', Z).replace('{x}', x).replace('{y}', y));
+    if (!r.ok) throw new Error('kaarttegel ' + r.status);
+    const tile = new VectorTile(new Pbf(await r.arrayBuffer()));
+    const each = (layer, fn) => { const l = tile.layers[layer]; for (let i = 0; l && i < l.length; i++) { const f = l.feature(i); fn(f.properties, f.toGeoJSON(x, y, Z).geometry); } };
+    const road = (p, g) => {
+      if (!ROAD.test(p.class) || p.brunnel === 'tunnel') return;
+      for (const line of g.type === 'LineString' ? [g.coordinates] : g.type === 'MultiLineString' ? g.coordinates : []) {
+        const pts = line.filter(([lon, lat]) => near(lon, lat));
+        if (pts.length < 2) continue;
+        // Punten op dezelfde plek krijgen hetzelfde nummer, zodat kruisende straten een kruispunt delen.
+        elements.push({ type: 'way', tags: { highway: p.class, name: p.name }, nodes: pts.map(([lon, lat]) => lon.toFixed(5) + ',' + lat.toFixed(5)), geometry: pts.map(([lon, lat]) => ({ lon, lat })) });
+      }
+    };
+    each('transportation', road); each('transportation_name', road);
+    const point = ok => (p, g) => { if (g.type === 'Point' && p.name && ok(p) && near(...g.coordinates)) elements.push({ type: 'node', lon: g.coordinates[0], lat: g.coordinates[1], tags: { name: p.name } }); };
+    each('poi', point(p => POI.test(p.class) || POI.test(p.subclass)));
+    each('place', point(p => /^(suburb|quarter|neighbourhood)$/.test(p.class)));
+    each('park', point(() => true));
+  }));
+  if (!elements.some(e => e.type === 'way')) throw new Error('geen straten in de kaarttegels');
+  return { elements };
 }
 
 function parseOsm(osm, proj) {
@@ -154,7 +196,10 @@ function centroid(p) {
 export async function generateZones(center, radius, count) {
   const proj = makeProj(center), R = radius;
   let osm = null;
-  try { osm = await fetchOsm(center, R); } catch (e) { console.warn('Geen straatdata, zones worden puur organisch', e); }
+  try { osm = await fetchOsm(center, R); } catch (e) {
+    console.warn('Overpass antwoordt niet, straten komen uit de kaarttegels', e);
+    try { osm = await fetchTiles(center, R); } catch (e2) { console.warn('Geen straatdata, zones worden puur organisch', e2); }
+  }
   const { nodes, roads, pois } = parseOsm(osm, proj);
   const rand = rng(Math.round(center.lat * 1e4) ^ Math.round(center.lng * 1e4) ^ (count * 7919));
 

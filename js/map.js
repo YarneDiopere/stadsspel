@@ -95,6 +95,27 @@ export async function makeMap(el, { center, onZone, flat = false }) {
         return new maplibregl.Marker({ element: outer, anchor: it.anchor || 'center' }).setLngLat([it.lng, it.lat]).addTo(map);
       });
     },
+    // Laat n figuurtjes achter elkaar van a naar b lopen (beide [lng, lat]).
+    march(a, b, html, n = 5) {
+      const T = 2800, GAP = 300, t0 = performance.now();
+      const ms = Array.from({ length: n }, () => {
+        const outer = document.createElement('div'); outer.className = 'marcher'; outer.innerHTML = html; outer.style.visibility = 'hidden';
+        return new maplibregl.Marker({ element: outer, anchor: 'bottom' }).setLngLat(a).addTo(map);
+      });
+      const step = now => {
+        let busy = false;
+        ms.forEach((mk, i) => {
+          const k = (now - t0 - i * GAP) / T;
+          if (k >= 1) return mk.remove();
+          busy = true;
+          if (k < 0) return;
+          mk.getElement().style.visibility = '';
+          mk.setLngLat([a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k]);
+        });
+        if (busy) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    },
     remove() { map.remove(); },
   };
 }

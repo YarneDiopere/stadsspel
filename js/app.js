@@ -5,6 +5,7 @@ import { generateZones, zoneAt, pickStarts, dist } from './zones.js';
 import { makeMap } from './map.js';
 import { prepareMedia, verify } from './ai.js';
 import { playIntro } from './intro.js';
+import { figure } from './figures.js';
 
 /* ---------- helpers ---------- */
 const $ = (s, el = document) => el.querySelector(s);
@@ -207,7 +208,7 @@ function leaveRoom(keep) {
   S.unsub.forEach(u => u()); S.unsub = [];
   if (S.map) { S.map.remove(); S.map = null; } S.mapLoading = false; S.posSub = false;
   if (S.watch != null) { navigator.geolocation.clearWatch(S.watch); S.watch = null; }
-  S.pendSeen = null;
+  S.pendSeen = S.prevOwn = null;
   Object.assign(S, { room: null, sheet: null, sel: null, zoneId: null, others: {}, photos: {}, endShown: false, histSaved: false });
   $('#hud')._h = $('#sheet')._h = $('#screen')._h = null;
   $('#sheet').hidden = true;
@@ -464,6 +465,17 @@ function onRoom() {
   if (S.pendSeen && me.sup) waiting.filter(([id]) => !S.pendSeen.has(id)).forEach(([id, s]) => notifySup(id, s));
   S.pendSeen = new Set(waiting.map(([id]) => id));
   if (me.sup) pushOn();
+
+  // Wordt een zone veroverd, dan marcheren er soldaatjes naartoe vanuit de dichtstbijzijnde zone van die groep.
+  const own = {}; zones().forEach(z => { own[z.id] = zst(z.id).owner || ''; });
+  if (S.prevOwn && S.map && m.phase === 'playing') zones().forEach(z => {
+    const o = own[z.id];
+    if (!o || o === S.prevOwn[z.id]) return;
+    const d2 = y => (y.c[0] - z.c[0]) ** 2 * 0.4 + (y.c[1] - z.c[1]) ** 2;
+    const from = zones().filter(y => y.id !== z.id && S.prevOwn[y.id] === o).sort((a, b) => d2(a) - d2(b))[0];
+    if (from) S.map.march(from.c, z.c, figure('squire', S.room.teams?.[o]?.color));
+  });
+  S.prevOwn = own;
 
   if (m.phase !== 'lobby') {
     if (me.sup && !S.posSub) { S.posSub = true; S.unsub.push(db.on('pos/' + S.code, v => { S.others = v || {}; updateMap(); })); }
@@ -826,12 +838,15 @@ async function combat(zid, tid, P) {
 
 function shShop() {
   const T = myTeam(), u = T.units || {};
-  return `<h2>Winkel</h2><p class="hint">Jullie hebben <b>💰 ${T.money}</b> goud.</p>
-    ${UNITS.map(x => `<div class="unit"><div class="uicon">${x.icon}</div>
-      <div><b>${x.name}</b> <span class="tag">kracht ${x.power}</span><small>${x.desc} In bezit: <b>${u[x.id] || 0}</b></small></div>
-      <div class="ubuy"><button class="btn small" data-act="buy" data-u="${x.id}" data-n="1" ${T.money >= x.price ? '' : 'disabled'}>💰 ${x.price}</button>
-      <button class="btn small alt" data-act="buy" data-u="${x.id}" data-n="5" ${T.money >= x.price * 5 ? '' : 'disabled'}>×5</button></div></div>`).join('')}
-    <p class="hint">Soldaten zet je in door in een zone te staan en erop te tikken.</p>`;
+  const army = UNITS.reduce((a, x) => a + (u[x.id] || 0) * x.power, 0);
+  return `<div class="shophead"><h2>Winkel</h2><span class="purse">💰 ${T.money}</span></div>
+    <p class="hint">Jullie leger is samen <b>${army}</b> sterk. Soldaten zet je in door in een zone te staan en erop te tikken.</p>
+    <div class="shop">${UNITS.map(x => { const have = u[x.id] || 0, can = T.money >= x.price; return `<div class="ucard ${can ? '' : 'poor'}">
+      <span class="upow" title="kracht">⚔ ${x.power}</span>${have ? `<span class="uown">×${have}</span>` : ''}
+      ${figure(x.fig, T.color)}
+      <b>${x.name}</b><small>${x.desc}</small>
+      <div class="ubuy"><button class="btn small" data-act="buy" data-u="${x.id}" data-n="1" ${can ? '' : 'disabled'}>💰 ${x.price}</button>
+      <button class="btn small alt" data-act="buy" data-u="${x.id}" data-n="5" ${T.money >= x.price * 5 ? '' : 'disabled'}>×5</button></div></div>`; }).join('')}</div>`;
 }
 A.buy = async d => {
   const x = UNITS.find(u => u.id === d.u), n = +d.n, tid = Me().team;
@@ -852,7 +867,7 @@ function shZone() {
       const u = T.units || {}, d = S.deploy, P = UNITS.reduce((a, x) => a + (d[x.id] || 0) * x.power, 0);
       const out = mine ? `Zone wordt ${s.power + P} sterk` : !o ? 'Deze zone is onbezet: ze wordt van jullie.' : 'Jullie weten niet hoeveel verdedigers hier staan. Is jullie aanval sterker, dan is de zone van jullie.';
       body = `<p class="hint">Hoeveel soldaten zet je in?</p>
-        ${UNITS.map(x => `<div class="unit"><div class="uicon">${x.icon}</div><div><b>${x.name}</b><small>kracht ${x.power} · in bezit ${u[x.id] || 0}</small></div>
+        ${UNITS.filter(x => u[x.id] > 0).map(x => `<div class="unit"><div class="uicon">${figure(x.fig, T.color)}</div><div><b>${x.name}</b><small>kracht ${x.power} · in bezit ${u[x.id] || 0}</small></div>
           <div class="stepper"><button data-act="dep" data-u="${x.id}" data-d="-1">−</button><b>${d[x.id] || 0}</b><button data-act="dep" data-u="${x.id}" data-d="1">+</button><button class="max" data-act="dep" data-u="${x.id}" data-d="99">max</button></div></div>`).join('')}
         ${P ? `<p class="note">${out}</p>` : ''}
         <button class="btn big" data-act="deploy" ${P ? '' : 'disabled'}>${mine ? '🛡️ Verdedig' : o ? '⚔️ Val aan' : '🏳️ Verover'}${P ? ` met kracht ${P}` : ''}</button>
@@ -874,7 +889,7 @@ A.deploy = async () => {
   const r = await db.tx(`${R()}/teams/${tid}/units`, u => {
     u = u || {};
     for (const k in d) if ((u[k] || 0) < d[k]) return;
-    const n = { a: 0, b: 0, c: 0, ...u }; for (const k in d) n[k] -= d[k];
+    const n = { ...u }; for (const k in d) n[k] = (n[k] || 0) - d[k];
     return n;
   });
   if (!r.committed) return toast('Niet genoeg soldaten');
