@@ -485,7 +485,7 @@ function onRoom() {
   if (S.taskSeen && mine && m.taskMode !== 'random') tids.filter(id => !S.taskSeen.has(id)).forEach(id => notifySup('task-' + id, S.room.tasks[id].title, '🎯 Nieuwe opdracht'));
   S.curSeen = cur; S.taskSeen = new Set(tids);
   S.pendSeen = new Set(waiting.map(([id]) => id));
-  if (me.sup) pushOn();
+  pushOn();
 
   // Wordt een zone veroverd, dan marcheren er soldaatjes naartoe vanuit de dichtstbijzijnde zone van die groep.
   const own = {}; zones().forEach(z => { own[z.id] = zst(z.id).owner || ''; });
@@ -520,14 +520,16 @@ async function notifySup(tag, body, title = 'Nieuw bewijs om na te kijken') {
   }
 }
 // Echte pushmeldingen (ook met de gsm op slot) via Firebase Cloud Messaging en het tussenstation.
-// Staat uit zolang config.js geen vapidKey heeft. Het toestel van elke leiding meldt zich per spel aan.
+// Staat uit zolang config.js geen vapidKey heeft. Elk toestel dat meldingen toestaat, meldt zich per spel aan;
+// het tussenstation beslist wie welke melding krijgt (leiding: bewijs en vragen, leden: nieuwe opdrachten).
 async function pushOn() {
   if (!vapidKey || isLocal || S.pushCode === S.code || window.Notification?.permission !== 'granted') return;
   S.pushCode = S.code;
   try { const tok = await db.pushToken(vapidKey); if (tok) await db.set(`${R()}/push/${S.pid}`, tok); } catch (e) { console.warn('Pushmeldingen lukken niet', e); }
 }
-function pingSup(sid) {
-  if (aiProxyUrl && vapidKey) fetch(aiProxyUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action: 'notify', code: S.code, sid }) }).catch(e => console.warn(e));
+// soort: 'sub' (bewijs wacht op de leiding), 'skip' (groep vraagt een andere opdracht), 'task' (groep kreeg een opdracht), 'new' (opdracht toegevoegd)
+function ping(kind, id) {
+  if (aiProxyUrl && vapidKey) fetch(aiProxyUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action: 'notify', code: S.code, kind, id }) }).catch(e => console.warn(e));
 }
 const notifBtn = () => (!('Notification' in window) || Notification.permission !== 'default' ? '' : '<button class="btn alt small center" data-act="notifOn">🔔 Meldingen bij een nieuwe opdracht aanzetten</button>');
 A.notifOn = async () => {
@@ -806,9 +808,9 @@ async function ensureCur() {
     if (r.committed) await db.set(`${R()}/teams/${tid}/curAt`, db.now());
   } finally { S.curBusy = false; }
 }
-const giveTask = (tid, task) => { const T = S.room.teams[tid]; return db.update(`${R()}/teams/${tid}`, { cur: task || nextTask(T, T.cur), curAt: db.now(), skipReq: null, skipNo: null }); };
+const giveTask = async (tid, task) => { const T = S.room.teams[tid]; await db.update(`${R()}/teams/${tid}`, { cur: task || nextTask(T, T.cur), curAt: db.now(), skipReq: null, skipNo: null }); ping('task', tid); };
 A.skipTask = () => giveTask(Me().team);
-A.askSkip = () => db.set(`${R()}/teams/${Me().team}/skipReq`, db.now());
+A.askSkip = async () => { await db.set(`${R()}/teams/${Me().team}/skipReq`, db.now()); ping('skip', Me().team); };
 A.skipOk = d => { giveTask(d.t); log(`${S.room.teams[d.t].name} krijgt een andere opdracht`, d.t); };
 A.skipNo = d => db.update(`${R()}/teams/${d.t}`, { skipReq: null, skipNo: db.now(), curAt: db.now() });
 A.givePick = (d, el) => { (S.give = S.give || {})[d.t] = el.value; };
@@ -849,7 +851,7 @@ function shTask() {
     <div class="facts"><span>${'⭐'.repeat(t.diff)}</span><span>${prize(t)}</span>${m.mode === 'verover' && z ? `<span>📍 voor ${esc(z.name)}</span>` : ''}</div>
     ${action}`;
 }
-A.askSup = async d => { await db.update(`${R()}/subs/${d.s}`, { status: 'pending' }); pingSup(d.s); };
+A.askSup = async d => { await db.update(`${R()}/subs/${d.s}`, { status: 'pending' }); ping('sub', d.s); };
 
 async function onFile(tid, file) {
   const task = S.room.tasks[tid], me = Me(), m = meta();
@@ -868,8 +870,8 @@ async function onFile(tid, file) {
       try { res = await verify(aiProxyUrl, S.code, task, media.ai); } catch (e) { console.warn(e); err = e.message; }
       if (res?.ok) { await db.update(`${R()}/subs/${sid}`, { ai: res.reden }); await approve(sid); }
       else if (res) await db.update(`${R()}/subs/${sid}`, { status: 'ai_rejected', ai: res.reden });
-      else { await db.update(`${R()}/subs/${sid}`, { status: 'pending', aiErr: err }); pingSup(sid); }
-    } else { await db.update(`${R()}/subs/${sid}`, { status: 'pending' }); pingSup(sid); }
+      else { await db.update(`${R()}/subs/${sid}`, { status: 'pending', aiErr: err }); ping('sub', sid); }
+    } else { await db.update(`${R()}/subs/${sid}`, { status: 'pending' }); ping('sub', sid); }
   } catch (e) { console.error(e); toast('Er ging iets mis: ' + e.message); }
   busy(null);
 }
@@ -879,7 +881,7 @@ async function approve(sid) {
   if (!r.committed) return;
   const sub = await db.get(`${R()}/subs/${sid}`), task = S.room.tasks[sub.task], T = S.room.teams[sub.team];
   await db.set(`${R()}/teams/${sub.team}/done/${sub.task}`, true);
-  if (meta().taskMode === 'random' && T.cur === sub.task) await db.update(`${R()}/teams/${sub.team}`, { cur: nextTask({ done: { ...T.done, [sub.task]: true } }, sub.task), curAt: db.now(), skipReq: null, skipNo: null });
+  if (meta().taskMode === 'random' && T.cur === sub.task) { await db.update(`${R()}/teams/${sub.team}`, { cur: nextTask({ done: { ...T.done, [sub.task]: true } }, sub.task), curAt: db.now(), skipReq: null, skipNo: null }); ping('task', sub.team); }
   if (meta().mode === 'leger') {
     await db.tx(`${R()}/teams/${sub.team}/money`, v => (v || 0) + task.reward);
     log(`${T.name} voltooide "${task.title}" (+${task.reward} goud)`, sub.team);
@@ -1061,7 +1063,9 @@ A.stopGame = async () => { if (await ask({ title: 'Spel stopzetten?', text: 'De 
 A.supAddTask = async () => {
   const title = $('#st').value.trim(); if (!title) return toast('Geef de opdracht een titel');
   const t = withReward({ title, desc: $('#sd').value.trim(), check: $('#sc').value.trim(), diff: +$('#sdiff').value });
-  await db.set(`${R()}/tasks/x${rid()}`, t);
+  const key = 'x' + rid();
+  await db.set(`${R()}/tasks/${key}`, t);
+  if (meta().taskMode !== 'random') ping('new', key);
   await archiveAdd(t);
   log(`Nieuwe opdracht: "${title}"`);
   S.sheet.tab = 'subs'; renderSheet();

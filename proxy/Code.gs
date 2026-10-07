@@ -54,31 +54,57 @@ function doPost(e) {
   }
 }
 
-// Pushmelding naar de leiding wanneer er bewijs op hen wacht (ook met de gsm op slot).
+// Pushmeldingen (ook met de gsm op slot). Wat er gemeld wordt, leest dit script zelf uit het spel in de database;
+// de site zegt enkel welk soort melding en over welke inzending, groep of opdracht het gaat:
+//   sub  = bewijs wacht op de leiding            -> naar de leiding
+//   skip = een groep vraagt een andere opdracht   -> naar de leiding
+//   task = een groep kreeg een nieuwe opdracht    -> naar de leden van die groep
+//   new  = de leiding voegde een opdracht toe     -> naar iedereen in een groep
 // Het sleutelbestand van het Firebase-serviceaccount staat als FCM_SA in de Scripteigenschappen (de volledige JSON).
 function notify(q) {
-  if (!/^[-\w]{1,40}$/.test(q.sid || '')) return { error: 'ongeldige inzending' };
+  const kind = q.kind || 'sub', id = String(q.id || q.sid || '');
+  if (!/^[-\w]{1,40}$/.test(id)) return { error: 'ongeldige melding' };
   const sa = PropertiesService.getScriptProperties().getProperty('FCM_SA');
   if (!sa) return { error: 'geen FCM-sleutel ingesteld' };
-  const cache = CacheService.getScriptCache(), once = 'n-' + q.code + '-' + q.sid;
-  if (cache.get(once)) return { ok: true, sent: 0 }; // voor deze inzending is net al gemeld
-  const room = DB + '/rooms/' + q.code;
+  const cache = CacheService.getScriptCache(), room = DB + '/rooms/' + q.code;
   const get = p => JSON.parse(UrlFetchApp.fetch(room + p + '.json', { muteHttpExceptions: true }).getContentText());
-  const sub = get('/subs/' + q.sid);
-  if (!sub || sub.status !== 'pending') return { error: 'geen wachtend bewijs' };
+
+  let title, body, tag, to;
+  if (kind === 'sub') {
+    const sub = get('/subs/' + id);
+    if (!sub || sub.status !== 'pending') return { error: 'geen wachtend bewijs' };
+    title = 'Nieuw bewijs om na te kijken'; tag = 'sub-' + id; to = p => p.sup;
+    body = (get('/teams/' + sub.team + '/name') || 'Een groep') + ' · ' + (get('/tasks/' + sub.task + '/title') || 'opdracht');
+  } else if (kind === 'skip') {
+    const t = get('/teams/' + id);
+    if (!t || !t.skipReq) return { error: 'geen vraag' };
+    title = 'Vraag van een groep'; tag = 'skip-' + id + ':' + t.skipReq; to = p => p.sup;
+    body = t.name + ' wil een andere opdracht';
+  } else if (kind === 'task') {
+    const t = get('/teams/' + id);
+    if (!t || !t.cur) return { error: 'geen opdracht' };
+    title = 'Nieuwe opdracht voor jullie groep'; tag = 'task-' + t.cur; to = p => p.team === id;
+    body = get('/tasks/' + t.cur + '/title') || '';
+  } else if (kind === 'new') {
+    body = get('/tasks/' + id + '/title');
+    if (!body) return { error: 'geen opdracht' };
+    title = 'Nieuwe opdracht'; tag = 'task-' + id; to = p => !!p.team;
+  } else return { error: 'onbekende melding' };
+
+  const once = 'n-' + q.code + '-' + kind + '-' + id + '-' + tag;
+  if (cache.get(once)) return { ok: true, sent: 0 }; // hiervoor is net al gemeld
   cache.put(once, '1', 120);
 
   const tokens = get('/push') || {}, players = get('/players') || {};
-  const body = (get('/teams/' + sub.team + '/name') || 'Een groep') + ' · ' + (get('/tasks/' + sub.task + '/title') || 'opdracht');
   const key = JSON.parse(sa), bearer = accessToken(key, cache);
   let sent = 0;
   Object.keys(tokens).forEach(pid => {
-    if (!players[pid] || !players[pid].sup) return;
+    if (!players[pid] || !to(players[pid])) return;
     const r = UrlFetchApp.fetch('https://fcm.googleapis.com/v1/projects/' + key.project_id + '/messages:send', {
       method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + bearer }, muteHttpExceptions: true,
       payload: JSON.stringify({ message: {
         token: tokens[pid],
-        data: { title: 'Nieuw bewijs om na te kijken', body: body, tag: 'sub-' + q.sid },
+        data: { title: title, body: body, tag: tag, ack: room + '/pushAck/' + pid + '.json' },
         webpush: { headers: { Urgency: 'high', TTL: '900' } },
       } }),
     });
