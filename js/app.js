@@ -208,7 +208,7 @@ function leaveRoom(keep) {
   S.unsub.forEach(u => u()); S.unsub = [];
   if (S.map) { S.map.remove(); S.map = null; } S.mapLoading = false; S.posSub = false;
   if (S.watch != null) { navigator.geolocation.clearWatch(S.watch); S.watch = null; }
-  S.pendSeen = S.prevOwn = S.reqSeen = null;
+  S.pendSeen = S.prevOwn = S.reqSeen = S.curSeen = S.taskSeen = null;
   Object.assign(S, { room: null, sheet: null, sel: null, zoneId: null, others: {}, photos: {}, endShown: false, histSaved: false });
   $('#hud')._h = $('#sheet')._h = $('#screen')._h = null;
   $('#sheet').hidden = true;
@@ -474,6 +474,16 @@ function onRoom() {
   const reqs = Object.entries(S.room.teams || {}).filter(([, t]) => t.skipReq).map(([id, t]) => [id + ':' + t.skipReq, t]);
   if (S.reqSeen && me.sup) reqs.filter(([k]) => !S.reqSeen.has(k)).forEach(([k, t]) => notifySup('skip-' + k, `${t.name} wil een andere opdracht dan "${S.room.tasks?.[t.cur]?.title || '?'}"`, 'Vraag van een groep'));
   S.reqSeen = new Set(reqs.map(([k]) => k));
+
+  // leden krijgen een seintje bij een nieuwe opdracht: hun nieuwe willekeurige opdracht, of een opdracht die de leiding toevoegt
+  const mine = myTeam(), cur = mine?.cur || '', tids = Object.keys(S.room.tasks || {});
+  if (S.curSeen && cur && cur !== S.curSeen) {
+    const title = S.room.tasks?.[cur]?.title || '';
+    toast('🎯 Nieuwe opdracht: ' + title, mine.color);
+    notifySup('task-' + cur, title, '🎯 Nieuwe opdracht voor jullie groep');
+  }
+  if (S.taskSeen && mine && m.taskMode !== 'random') tids.filter(id => !S.taskSeen.has(id)).forEach(id => notifySup('task-' + id, S.room.tasks[id].title, '🎯 Nieuwe opdracht'));
+  S.curSeen = cur; S.taskSeen = new Set(tids);
   S.pendSeen = new Set(waiting.map(([id]) => id));
   if (me.sup) pushOn();
 
@@ -519,6 +529,7 @@ async function pushOn() {
 function pingSup(sid) {
   if (aiProxyUrl && vapidKey) fetch(aiProxyUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action: 'notify', code: S.code, sid }) }).catch(e => console.warn(e));
 }
+const notifBtn = () => (!('Notification' in window) || Notification.permission !== 'default' ? '' : '<button class="btn alt small center" data-act="notifOn">🔔 Meldingen bij een nieuwe opdracht aanzetten</button>');
 A.notifOn = async () => {
   try { S.audio = S.audio || new (window.AudioContext || window.webkitAudioContext)(); } catch { /* geen geluid */ }
   const r = await Notification.requestPermission();
@@ -769,7 +780,7 @@ function shTasks() {
   const allDone = list.every(t => done[t.id]);
   list.sort((a, b) => (allDone ? 0 : !!done[a.id] - !!done[b.id]) || a.diff - b.diff);
   return `<h2>Opdrachten</h2>
-    <p class="hint">${meta().mode === 'leger' ? 'Elke goedgekeurde opdracht levert goud op.' : 'Elke goedgekeurde opdracht telt als sterkte in de zone waar je staat.'}${allDone ? ' Alles gedaan: je mag opnieuw beginnen.' : ''}</p>
+    <p class="hint">${meta().mode === 'leger' ? 'Elke goedgekeurde opdracht levert goud op.' : 'Elke goedgekeurde opdracht telt als sterkte in de zone waar je staat.'}${allDone ? ' Alles gedaan: je mag opnieuw beginnen.' : ''}</p>${notifBtn()}
     ${list.map(t => { const d = done[t.id] && !allDone, st = last[t.id] && subState(last[t.id]); return `<button class="titem ${d ? 'done' : ''}" data-act="openTask" data-id="${t.id}">
       <div><b>${esc(t.title)}</b><small>${esc(t.desc)}</small>${d ? '<em>✓ voltooid</em>' : st && st !== 'approved' ? `<em>${statusTag(st)}</em>` : ''}</div><span class="prize">${prize(t)}</span></button>`; }).join('')}`;
 }
@@ -832,7 +843,7 @@ function shTask() {
     else if (wait > 0) skip = `<p class="hint center">${T.skipNo ? '✗ De leiding wil dat jullie deze opdracht doen. ' : ''}🎲 Een andere opdracht vragen kan over ${fmtTime(wait)}</p>`;
     else skip = `<button class="btn big ghost" data-act="askSkip">🎲 Vraag de leiding om een andere opdracht</button>`;
   }
-  action += skip;
+  action += skip + notifBtn();
   return `${rnd ? '<p class="hint">🎲 Jullie opdracht</p>' : '<button class="back" data-act="sheet" data-t="tasks">‹ Alle opdrachten</button>'}
     <h2>${esc(t.title)}</h2><p>${esc(t.desc)}</p>
     <div class="facts"><span>${'⭐'.repeat(t.diff)}</span><span>${prize(t)}</span>${m.mode === 'verover' && z ? `<span>📍 voor ${esc(z.name)}</span>` : ''}</div>
@@ -982,6 +993,7 @@ function shMenu() {
   const m = meta();
   return `<h2>Menu</h2>
     <div class="facts"><span>Code <b>${m.code}</b></span><span>${m.mode === 'leger' ? '⚔️ Leger' : '🏰 Verover'}</span></div>
+    ${notifBtn()}
     <button class="btn big alt" data-act="replay">🎬 Speluitleg opnieuw bekijken</button>
     <button class="btn big alt" data-act="recenter">🧭 Kaart centreren</button>
     <button class="btn big ghost" data-act="leave">Spel verlaten</button>`;
