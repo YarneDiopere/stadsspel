@@ -220,7 +220,7 @@ A.leave = async () => { if (await ask({ title: 'Spel verlaten?', text: 'Met de r
 const STEPS = ['Start', 'Speelveld', 'Tijd & groepen', 'Opdrachten', 'Overzicht'];
 
 async function viewCreate() {
-  const d = S.draft = S.draft || { step: 0, name: ls('name') || '', hostPlays: 'nee', mode: 'leger', place: null, radius: 600, zoneCount: 18, duration: 120, customDur: 100, teamMode: 'random', teamCount: 4, useArchive: 'ja', gps: 'ja', tasks: [], tdiff: 1, skip: {} };
+  const d = S.draft = S.draft || { step: 0, name: ls('name') || '', hostPlays: 'nee', mode: 'leger', place: null, radius: 600, zoneCount: 18, duration: 120, customDur: 100, teamMode: 'random', teamCount: 4, taskMode: 'list', useArchive: 'ja', gps: 'ja', tasks: [], tdiff: 1, skip: {} };
   const seg = (f, opts, cls = '') => `<div class="seg ${cls}" data-seg="${f}">${opts.map(([v, l]) => `<button type="button" data-act="seg" data-v="${v}" class="${String(d[f]) === String(v) ? 'on' : ''}">${l}</button>`).join('')}</div>`;
   const card = (icon, title, text) => `<span class="cicon">${icon}</span><span><b>${title}</b><small>${text}</small></span>`;
   $('#screen').innerHTML = `<section class="card wizard">
@@ -272,6 +272,8 @@ async function viewCreate() {
         <button class="btn alt" type="button" data-act="addDraftTask">+ Toevoegen</button>
       </div>
       <p class="hint">Nieuwe opdrachten komen automatisch in het archief.</p>
+      <p class="q">Hoe krijgen de groepen hun opdrachten?</p>
+      ${seg('taskMode', [['list', card('📜', 'Lijst', 'Elke groep kiest zelf uit alle opdrachten.')], ['random', card('🎲', 'Willekeurig', 'Elke groep krijgt telkens één willekeurige opdracht. Een andere vragen kan pas na 3 minuten.')]], 'cards')}
     </div>
 
     <div class="step" data-step="4">
@@ -319,7 +321,7 @@ function showStep() {
       row(1, '📍', 'Speelveld', `${esc(d.place.name.split(',')[0])} · ${d.radius} m · ${d.zoneCount} zones${d.gps === 'ja' ? '' : ' · zonder gps'}`) +
       row(2, '⏳', 'Speelduur', fmtDur(draftDuration())) +
       row(2, '👥', 'Groepen', `${d.teamCount} groepen · ${d.teamMode === 'random' ? 'willekeurig' : 'zelf verdelen'}`) +
-      row(3, '🎯', 'Opdrachten', `${draftTasks().length} opdrachten${d.tasks.length ? ` (${d.tasks.length} eigen)` : ''}`);
+      row(3, '🎯', 'Opdrachten', `${draftTasks().length} opdrachten${d.tasks.length ? ` (${d.tasks.length} eigen)` : ''} · ${d.taskMode === 'random' ? 'willekeurig, één per keer' : 'zelf kiezen uit de lijst'}`);
   }
   window.scrollTo(0, 0);
 }
@@ -439,7 +441,7 @@ A.create = async (_, btn) => {
     const tasks = {}; list.forEach((t, i) => { tasks['t' + i] = withReward(t); });
     ls('name', name);
     await db.set('rooms/' + code, {
-      meta: { code, host: S.pid, mode: d.mode, center: d.place, radius: d.radius, duration, phase: 'lobby', teamMode: d.teamMode, teamCount: d.teamCount, gps: d.gps === 'ja', osm, createdAt: db.now() },
+      meta: { code, host: S.pid, mode: d.mode, center: d.place, radius: d.radius, duration, phase: 'lobby', teamMode: d.teamMode, teamCount: d.teamCount, taskMode: d.taskMode, gps: d.gps === 'ja', osm, createdAt: db.now() },
       zonesJson: JSON.stringify(zs), tasks,
       players: { [S.pid]: { name, sup: true, plays: d.hostPlays === 'ja', team: '' } },
     });
@@ -562,7 +564,7 @@ function renderLobby() {
     <button class="btn ghost small center" data-act="copy" data-t="${esc(link)}">🔗 Kopieer uitnodigingslink</button>
     <div class="facts">
       <span>${m.mode === 'leger' ? '⚔️ Leger' : '🏰 Verover'}</span><span>📍 ${esc(m.center.name.split(',')[0])}</span><span>⏳ ${fmtDur(m.duration)}</span>
-      <span>🗺️ ${zones().length} zones</span><span>🎯 ${Object.keys(S.room.tasks || {}).length} opdrachten</span>
+      <span>🗺️ ${zones().length} zones</span><span>🎯 ${Object.keys(S.room.tasks || {}).length} opdrachten${m.taskMode === 'random' ? ' · 🎲 willekeurig' : ''}</span>
     </div>
     ${m.osm ? '' : `<p class="note">Straatdata was niet bereikbaar: de zones zijn organisch getekend zonder straten te volgen.${host ? ' <button class="btn small" data-act="regen">Opnieuw proberen</button>' : ''}</p>`}
 
@@ -727,6 +729,10 @@ A.tab = d => { S.sheet.tab = d.tab; renderSheet(); };
 
 function renderSheet() {
   const el = $('#sheet'), s = S.sheet; if (!s) { el.hidden = true; return; }
+  if (meta().taskMode === 'random' && (s.t === 'tasks' || s.t === 'task') && myTeam()) {
+    s.t = 'task'; s.id = S.room.tasks?.[myTeam().cur] ? myTeam().cur : null;
+    if (!s.id) ensureCur();
+  }
   const body = ({ tasks: shTasks, task: shTask, shop: shShop, zone: shZone, sup: shSup, score: shScore, menu: shMenu })[s.t]();
   // Het kader wordt één keer opgebouwd (met inschuif-animatie); daarna verandert enkel de inhoud.
   if (el.hidden || !$('.sheet-body', el)) {
@@ -761,7 +767,29 @@ function shTasks() {
 }
 A.openTask = d => openSheet({ t: 'task', id: d.id });
 
+// Willekeurige modus: elke groep heeft één lopende opdracht (teams/<groep>/cur). Na goedkeuring komt er een nieuwe;
+// zelf een andere vragen kan pas na SKIP_MS, of meteen als het bewijs bij de leiding ligt te wachten.
+const SKIP_MS = 180000;
+function nextTask(T, not) {
+  const ids = Object.keys(S.room.tasks || {}), done = T.done || {};
+  let pool = ids.filter(id => !done[id] && id !== not);
+  if (!pool.length) pool = ids.filter(id => id !== not);
+  if (!pool.length) pool = ids;
+  return pool[Math.random() * pool.length | 0];
+}
+async function ensureCur() {
+  const tid = Me()?.team, T = myTeam();
+  if (!T || S.room.tasks?.[T.cur] || S.curBusy) return;
+  S.curBusy = true;
+  try {
+    const r = await db.tx(`${R()}/teams/${tid}/cur`, c => (c && S.room.tasks[c] ? undefined : nextTask(T)));
+    if (r.committed) await db.set(`${R()}/teams/${tid}/curAt`, db.now());
+  } finally { S.curBusy = false; }
+}
+A.skipTask = () => { const T = myTeam(); db.update(`${R()}/teams/${Me().team}`, { cur: nextTask(T, T.cur), curAt: db.now() }); };
+
 function shTask() {
+  if (!S.sheet.id) return '<h2>Opdracht</h2><div class="busy"><div class="spin"></div>Jullie opdracht wordt gekozen…</div>';
   const t = S.room.tasks[S.sheet.id], T = myTeam(), last = lastSubs()[S.sheet.id], m = meta(), ph = phase();
   const list = Object.keys(S.room.tasks), allDone = list.every(id => T.done?.[id]);
   const done = T.done?.[S.sheet.id] && !allDone, zid = target(), z = zid && zoneById(zid), st = last && subState(last);
@@ -776,7 +804,15 @@ function shTask() {
   else if (st === 'stuck') action = `<p class="note bad">⚠ De controle van jullie bewijs is onderbroken. Probeer opnieuw, of laat de leiding kijken.</p><button class="btn alt" data-act="askSup" data-s="${last.id}">Vraag de leiding om te kijken</button>${upload}`;
   else if (st === 'ai_rejected') action = `<p class="note bad">✗ ${esc(last.ai || 'Niet goedgekeurd')}</p><button class="btn alt" data-act="askSup" data-s="${last.id}">Vraag de leiding om te kijken</button>${upload}`;
   else action = (st === 'rejected' ? '<p class="note bad">✗ Afgekeurd door de leiding. Probeer opnieuw.</p>' : '') + upload;
-  return `<button class="back" data-act="sheet" data-t="tasks">‹ Alle opdrachten</button>
+  const rnd = m.taskMode === 'random';
+  let skip = '';
+  if (rnd && ph === 'playing' && list.length > 1 && !S.busy) {
+    const free = st === 'pending' || st === 'stuck', wait = (T.curAt || 0) + SKIP_MS - db.now();
+    skip = free || wait <= 0 ? `<button class="btn big ghost" data-act="skipTask">🎲 ${free ? 'Volgende opdracht' : 'Andere opdracht'}</button>`
+      : `<p class="hint center">🎲 Een andere opdracht vragen kan over ${fmtTime(wait)}</p>`;
+  }
+  action += skip;
+  return `${rnd ? '<p class="hint">🎲 Jullie opdracht</p>' : '<button class="back" data-act="sheet" data-t="tasks">‹ Alle opdrachten</button>'}
     <h2>${esc(t.title)}</h2><p>${esc(t.desc)}</p>
     <div class="facts"><span>${'⭐'.repeat(t.diff)}</span><span>${prize(t)}</span>${m.mode === 'verover' && z ? `<span>📍 voor ${esc(z.name)}</span>` : ''}</div>
     ${action}`;
@@ -811,6 +847,7 @@ async function approve(sid) {
   if (!r.committed) return;
   const sub = await db.get(`${R()}/subs/${sid}`), task = S.room.tasks[sub.task], T = S.room.teams[sub.team];
   await db.set(`${R()}/teams/${sub.team}/done/${sub.task}`, true);
+  if (meta().taskMode === 'random' && T.cur === sub.task) await db.update(`${R()}/teams/${sub.team}`, { cur: nextTask({ done: { ...T.done, [sub.task]: true } }, sub.task), curAt: db.now() });
   if (meta().mode === 'leger') {
     await db.tx(`${R()}/teams/${sub.team}/money`, v => (v || 0) + task.reward);
     log(`${T.name} voltooide "${task.title}" (+${task.reward} goud)`, sub.team);
@@ -862,7 +899,7 @@ function shZone() {
   if (T && ph === 'playing') {
     const mine = s.owner === me.team;
     if (!canAct(zid)) body = '<p class="note">Je moet in deze zone staan om hier iets te doen.</p>';
-    else if (m.mode === 'verover') body = `<p>${mine ? 'Versterk deze zone' : 'Verover deze zone'} door hier een opdracht uit te voeren.</p><button class="btn big" data-act="sheet" data-t="tasks">🎯 Kies een opdracht</button>`;
+    else if (m.mode === 'verover') body = `<p>${mine ? 'Versterk deze zone' : 'Verover deze zone'} door hier een opdracht uit te voeren.</p><button class="btn big" data-act="sheet" data-t="tasks">🎯 ${m.taskMode === 'random' ? 'Naar jullie opdracht' : 'Kies een opdracht'}</button>`;
     else {
       const u = T.units || {}, d = S.deploy, P = UNITS.reduce((a, x) => a + (d[x.id] || 0) * x.power, 0);
       const out = mine ? `Zone wordt ${s.power + P} sterk` : !o ? 'Deze zone is onbezet: ze wordt van jullie.' : 'Jullie weten niet hoeveel verdedigers hier staan. Is jullie aanval sterker, dan is de zone van jullie.';
