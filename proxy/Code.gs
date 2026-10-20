@@ -60,6 +60,9 @@ function doPost(e) {
 //   skip = een groep vraagt een andere opdracht   -> naar de leiding
 //   task = een groep kreeg een nieuwe opdracht    -> naar de leden van die groep
 //   new  = de leiding voegde een opdracht toe     -> naar iedereen in een groep
+//   duel = een groep daagt een zone uit           -> naar de leden van de verdedigende groep
+//   buzz = de leiding start een buzzer-ronde      -> naar iedereen in een groep
+//   pack = de leiding verstopte een pakketje      -> naar iedereen in een groep
 // Het sleutelbestand van het Firebase-serviceaccount staat als FCM_SA in de Scripteigenschappen (de volledige JSON).
 function notify(q) {
   const kind = q.kind || 'sub', id = String(q.id || q.sid || '');
@@ -89,6 +92,21 @@ function notify(q) {
     body = get('/tasks/' + id + '/title');
     if (!body) return { error: 'geen opdracht' };
     title = 'Nieuwe opdracht'; tag = 'task-' + id; to = p => !!p.team;
+  } else if (kind === 'duel') {
+    const x = get('/duels/' + id);
+    if (!x || x.status !== 'wait') return { error: 'geen duel' };
+    const z = JSON.parse(get('/zonesJson') || '[]').filter(z => z.id === id)[0];
+    title = '⚔️ Jullie zone wordt aangevallen!'; tag = 'duel-' + id + ':' + x.at; to = p => p.team === x.def;
+    body = (get('/teams/' + x.att + '/name') || 'Een groep') + ' daagt jullie uit in ' + (z ? z.name : 'een zone') + '. Ren terug: jullie hebben 3 minuten!';
+  } else if (kind === 'buzz') {
+    const b = get('/buzz');
+    if (!b || b.id !== id) return { error: 'geen buzzer-ronde' };
+    title = '🚨 Buzzer!'; tag = 'buzz-' + id; to = p => !!p.team;
+    body = 'Ren met je hele groep naar ' + b.label + '!';
+  } else if (kind === 'pack') {
+    if (!get('/packs/' + id)) return { error: 'geen pakketje' };
+    title = '📦 Nieuw pakketje verstopt!'; tag = 'pack-' + id; to = p => !!p.team;
+    body = 'Bekijk de foto bij Pakketjes en ga zoeken.';
   } else return { error: 'onbekende melding' };
 
   const once = 'n-' + q.code + '-' + kind + '-' + id + '-' + tag;

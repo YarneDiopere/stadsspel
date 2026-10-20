@@ -258,3 +258,12 @@ div.titem { cursor: default; }
 @keyframes march { from { transform: translateY(0) rotate(-5deg); } to { transform: translateY(-4px) rotate(5deg); } }
 .row.give { flex-wrap: nowrap; margin-top: 6px; }
 .row.give select { flex: 1; min-width: 0; margin: 0; }
+
+/* modus Duel */
+.duelgame { background: var(--ink); color: var(--paper); border-radius: 12px; padding: 12px 14px; margin: 10px 0; }
+.duelgame b { display: block; font: 800 1.1rem var(--display); color: var(--gold); }
+.duelgame small { color: #f1e3c0cc; }
+.btn.buzzer { background: linear-gradient(#e85b4f, var(--red)); font-weight: 800; letter-spacing: .04em; animation: pulse 1s ease-in-out infinite; }
+.btn.buzzer:disabled { animation: none; }
+@keyframes pulse { 50% { transform: scale(1.06); } }
+.cd { font-variant-numeric: tabular-nums; }

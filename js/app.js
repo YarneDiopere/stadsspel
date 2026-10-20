@@ -1,6 +1,6 @@
 import { db, isLocal } from './db.js';
 import { aiProxyUrl, vapidKey } from './config.js';
-import { TEAMS, UNITS, DURATIONS, DEFAULT_TASKS, REWARD, START_POWER } from './data.js';
+import { TEAMS, UNITS, DURATIONS, DEFAULT_TASKS, DUELS, REWARD, START_POWER } from './data.js';
 import { generateZones, zoneAt, pickStarts, dist } from './zones.js';
 import { makeMap } from './map.js';
 import { prepareMedia, verify } from './ai.js';
@@ -70,6 +70,7 @@ const canAct = id => !!id && (!meta().gps || !!Me()?.sup || S.zoneId === id);
 const target = () => (S.sel && canAct(S.sel) ? S.sel : S.zoneId);
 const seesPower = owner => !!Me()?.sup || (!!owner && owner === Me()?.team) || phase() === 'ended';
 const log = (m, t) => db.push(R() + '/log', { m, t: t || '', ts: db.now() });
+const modeLabel = m => ({ leger: '⚔️ Leger', verover: '🏰 Verover', duel: '🤺 Duel' })[m] || m;
 
 /* ---------- acties via data-act ---------- */
 const A = {};
@@ -81,11 +82,13 @@ document.addEventListener('input', e => {
   const f = e.target.dataset?.f;
   if (f && S.draft) { S.draft[f] = e.target.type === 'range' || e.target.type === 'number' ? +e.target.value : e.target.value; syncCreate(f); }
   if (e.target.id === 'loc') searchPlace(e.target.value);
+  if (e.target.id === 'pkcode') S.packCode = e.target.value;
 });
 document.addEventListener('change', e => {
   const d = e.target.dataset || {};
   if (d.chg) A[d.chg]?.(d, e.target);
   if (d.file && e.target.files[0]) { onFile(d.file, e.target.files[0]); e.target.value = ''; }
+  if (d.packfile && e.target.files[0]) { onPackFile(e.target.files[0]); e.target.value = ''; }
 });
 
 /* ---------- start, meedoen ---------- */
@@ -136,7 +139,7 @@ async function viewArchive(tab = 'games') {
   }
   const games = Object.entries(hist || {}).map(([id, g]) => ({ id, ...g })).sort((a, b) => b.date - a.date);
   frame(games.map(g => `<div class="sub-card">
-      <div><b>${g.title ? esc(g.title) : '📍 ' + esc((g.place || '').split(',')[0])}</b> <span class="tag">${g.mode === 'leger' ? 'Leger' : 'Verover'}</span></div>
+      <div><b>${g.title ? esc(g.title) : '📍 ' + esc((g.place || '').split(',')[0])}</b> <span class="tag">${modeLabel(g.mode)}</span></div>
       <small>${new Date(g.date).toLocaleDateString('nl-BE', { day: 'numeric', month: 'long', year: 'numeric' })} · ${fmtDur(g.duration)} · ${g.players} deelnemers · ${g.zones} zones</small>
       ${scoreRows(g.score || [], true)}
       <div class="row"><button class="btn small ghost" data-act="histRename" data-id="${esc(g.id)}" data-t="${esc(g.title || (g.place || '').split(',')[0])}">✏️ Naam wijzigen</button><button class="btn small ghost" data-act="histDel" data-id="${esc(g.id)}">🗑️ Verwijderen</button></div>
@@ -208,7 +211,7 @@ function leaveRoom(keep) {
   S.unsub.forEach(u => u()); S.unsub = [];
   if (S.map) { S.map.remove(); S.map = null; } S.mapLoading = false; S.posSub = false;
   if (S.watch != null) { navigator.geolocation.clearWatch(S.watch); S.watch = null; }
-  S.pendSeen = S.prevOwn = S.reqSeen = S.curSeen = S.taskSeen = null;
+  S.pendSeen = S.prevOwn = S.reqSeen = S.curSeen = S.taskSeen = S.duelSeen = S.buzzSeen = S.packSeen = null;
   Object.assign(S, { room: null, sheet: null, sel: null, zoneId: null, others: {}, photos: {}, endShown: false, histSaved: false });
   $('#hud')._h = $('#sheet')._h = $('#screen')._h = null;
   $('#sheet').hidden = true;
@@ -220,7 +223,7 @@ A.leave = async () => { if (await ask({ title: 'Spel verlaten?', text: 'Met de r
 const STEPS = ['Start', 'Speelveld', 'Tijd & groepen', 'Opdrachten', 'Overzicht'];
 
 async function viewCreate() {
-  const d = S.draft = S.draft || { step: 0, name: ls('name') || '', hostPlays: 'nee', mode: 'leger', place: null, radius: 600, zoneCount: 18, duration: 120, customDur: 100, teamMode: 'random', teamCount: 4, taskMode: 'list', skipWait: 3, useArchive: 'ja', gps: 'ja', tasks: [], tdiff: 1, skip: {} };
+  const d = S.draft = S.draft || { step: 0, name: ls('name') || '', hostPlays: 'nee', mode: 'duel', place: { name: 'Grote Markt, Poperinge, België', lat: 50.85563, lng: 2.72652 }, radius: 600, zoneCount: 20, duration: 120, customDur: 100, teamMode: 'random', teamCount: 5, ai: 'nee', taskMode: 'list', skipWait: 3, useArchive: 'ja', gps: 'ja', tasks: [], tdiff: 1, skip: {} };
   const seg = (f, opts, cls = '') => `<div class="seg ${cls}" data-seg="${f}">${opts.map(([v, l]) => `<button type="button" data-act="seg" data-v="${v}" class="${String(d[f]) === String(v) ? 'on' : ''}">${l}</button>`).join('')}</div>`;
   const card = (icon, title, text) => `<span class="cicon">${icon}</span><span><b>${title}</b><small>${text}</small></span>`;
   $('#screen').innerHTML = `<section class="card wizard">
@@ -234,7 +237,7 @@ async function viewCreate() {
       ${seg('hostPlays', [['nee', card('👑', 'Enkel leiding', 'Je volgt alles op de kaart en keurt opdrachten goed.')], ['ja', card('🏃', 'Ik speel mee', 'Je zit in een groep én je bent leiding.')]], 'cards')}
       <p class="hint">Andere leiding duid je straks aan in de lobby.</p>
       <p class="q">Welk spel spelen jullie?</p>
-      ${seg('mode', [['leger', card('⚔️', 'Leger', 'Opdrachten leveren goud op. Daarmee koop je soldaten en val je zones aan.')], ['verover', card('🏰', 'Verover', 'Geen winkel: elke goedgekeurde opdracht versterkt meteen de zone waar je staat.')]], 'cards')}
+      ${seg('mode', [['duel', card('🤺', 'Duel', 'Vrije zones claim je met de opdracht van die zone. Een zone van een andere groep pak je af met een duel. Met buzzer-rondes en pakketjes.')], ['leger', card('⚔️', 'Leger', 'Opdrachten leveren goud op. Daarmee koop je soldaten en val je zones aan.')], ['verover', card('🏰', 'Verover', 'Geen winkel: elke goedgekeurde opdracht versterkt meteen de zone waar je staat.')]], 'cards')}
     </div>
 
     <div class="step" data-step="1">
@@ -272,6 +275,9 @@ async function viewCreate() {
         <button class="btn alt" type="button" data-act="addDraftTask">+ Toevoegen</button>
       </div>
       <p class="hint">Nieuwe opdrachten komen automatisch in het archief.</p>
+      <p class="q">Automatische fotocontrole?</p>
+      ${seg('ai', [['nee', card('👑', 'Enkel de leiding', 'De leiding keurt elk bewijs zelf goed of af.')], ['ja', card('🤖', 'Met AI', 'Een AI kijkt het bewijs eerst na. Afgekeurd? Dan kan de groep de leiding laten kijken.')]], 'cards')}
+      <div data-ifnot="mode=duel">
       <p class="q">Hoe krijgen de groepen hun opdrachten?</p>
       ${seg('taskMode', [['list', card('📜', 'Lijst', 'Elke groep kiest zelf uit alle opdrachten.')], ['random', card('🎲', 'Willekeurig', 'Elke groep krijgt telkens één willekeurige opdracht. Een andere krijgen ze enkel als de leiding dat toestaat.')]], 'cards')}
       <div data-if="taskMode=random">
@@ -279,6 +285,8 @@ async function viewCreate() {
         ${seg('skipWait', [[0, 'Meteen'], [1, '1 min'], [3, '3 min'], [5, '5 min'], [10, '10 min'], [15, '15 min']], 'grid')}
         <p class="hint">De leiding kan altijd zelf een opdracht geven aan een groep.</p>
       </div>
+      </div>
+      <p class="hint" data-if="mode=duel">In modus Duel krijgt elke zone vast één van deze opdrachten.</p>
     </div>
 
     <div class="step" data-step="4">
@@ -322,11 +330,11 @@ function showStep() {
     const row = (step, icon, label, val) => `<button type="button" class="sumrow" data-act="step" data-n="${step}"><span>${icon}</span><span><small>${label}</small><b>${val}</b></span><em>Wijzig</em></button>`;
     $('#summary').innerHTML =
       row(0, '👤', 'Leiding', `${esc(d.name)} · ${d.hostPlays === 'ja' ? 'speelt mee' : 'speelt niet mee'}`) +
-      row(0, d.mode === 'leger' ? '⚔️' : '🏰', 'Spel', d.mode === 'leger' ? 'Leger' : 'Verover') +
+      row(0, '🎮', 'Spel', modeLabel(d.mode)) +
       row(1, '📍', 'Speelveld', `${esc(d.place.name.split(',')[0])} · ${d.radius} m · ${d.zoneCount} zones${d.gps === 'ja' ? '' : ' · zonder gps'}`) +
       row(2, '⏳', 'Speelduur', fmtDur(draftDuration())) +
       row(2, '👥', 'Groepen', `${d.teamCount} groepen · ${d.teamMode === 'random' ? 'willekeurig' : 'zelf verdelen'}`) +
-      row(3, '🎯', 'Opdrachten', `${draftTasks().length} opdrachten${d.tasks.length ? ` (${d.tasks.length} eigen)` : ''} · ${d.taskMode === 'random' ? `willekeurig · andere vragen ${d.skipWait ? 'na ' + d.skipWait + ' min' : 'mag meteen'}` : 'zelf kiezen uit de lijst'}`);
+      row(3, '🎯', 'Opdrachten', `${draftTasks().length} opdrachten${d.tasks.length ? ` (${d.tasks.length} eigen)` : ''} · ${d.ai === 'ja' ? '🤖 met AI' : '👑 leiding keurt'} · ${d.mode === 'duel' ? 'één per zone' : d.taskMode === 'random' ? `willekeurig · andere vragen ${d.skipWait ? 'na ' + d.skipWait + ' min' : 'mag meteen'}` : 'zelf kiezen uit de lijst'}`);
   }
   window.scrollTo(0, 0);
 }
@@ -377,6 +385,7 @@ A.arcTog = (d, el) => { if (el.checked) delete S.draft.skip[d.k]; else S.draft.s
 function syncCreate(changed) {
   const d = S.draft; if (!d || S.view !== 'create') return;
   $$('[data-if]').forEach(el => { const [f, v] = el.dataset.if.split('='); el.hidden = String(d[f]) !== v; });
+  $$('[data-ifnot]').forEach(el => { const [f, v] = el.dataset.ifnot.split('='); el.hidden = String(d[f]) === v; });
   $$('input[type=range]').forEach(r => r.style.setProperty('--p', (r.value - r.min) / (r.max - r.min) * 100 + '%'));
   $('#radv').textContent = `${d.radius} m rond het centrum (±${Math.round(d.radius * 2 / 75)} min wandelen van rand tot rand)`; $('#zcv').textContent = d.zoneCount; $('#tcv').textContent = d.teamCount;
   if (changed === 'radius' && S.pmap && d.place) { S.pmap.setRing(d.place, d.radius); S.pmap.fit(d.place, d.radius); }
@@ -446,7 +455,7 @@ A.create = async (_, btn) => {
     const tasks = {}; list.forEach((t, i) => { tasks['t' + i] = withReward(t); });
     ls('name', name);
     await db.set('rooms/' + code, {
-      meta: { code, host: S.pid, mode: d.mode, center: d.place, radius: d.radius, duration, phase: 'lobby', teamMode: d.teamMode, teamCount: d.teamCount, taskMode: d.taskMode, skipWait: d.skipWait, gps: d.gps === 'ja', osm, createdAt: db.now() },
+      meta: { code, host: S.pid, mode: d.mode, center: d.place, radius: d.radius, duration, phase: 'lobby', teamMode: d.teamMode, teamCount: d.teamCount, taskMode: d.mode === 'duel' ? 'list' : d.taskMode, skipWait: d.skipWait, ai: d.ai === 'ja', gps: d.gps === 'ja', osm, createdAt: db.now() },
       zonesJson: JSON.stringify(zs), tasks,
       players: { [S.pid]: { name, sup: true, plays: d.hostPlays === 'ja', team: '' } },
     });
@@ -484,6 +493,19 @@ function onRoom() {
   }
   if (S.taskSeen && mine && m.taskMode !== 'random') tids.filter(id => !S.taskSeen.has(id)).forEach(id => notifySup('task-' + id, S.room.tasks[id].title, '🎯 Nieuwe opdracht'));
   S.curSeen = cur; S.taskSeen = new Set(tids);
+
+  // modus Duel: aanval op een zone van jullie, buzzer-ronde, nieuw pakketje
+  if (m.mode === 'duel') {
+    const live = liveDuels(), b = S.room.buzz, pk = Object.keys(S.room.packs || {});
+    if (S.duelSeen && mine) live.filter(x => x.def === me.team && !S.duelSeen.has(x.zid + ':' + x.at)).forEach(x => {
+      notifySup('duel-' + x.zid, `${S.room.teams[x.att].name} daagt jullie uit in ${zoneById(x.zid).name}. Ren terug: jullie hebben 3 minuten!`, '⚔️ Jullie zone wordt aangevallen!');
+      openSheet({ t: 'duel', zid: x.zid });
+    });
+    if (S.buzzSeen != null && b?.id && b.id !== S.buzzSeen && mine) notifySup('buzz-' + b.id, `Ren met je hele groep naar ${b.label}!`, '🚨 Buzzer!');
+    if (S.packSeen && mine) pk.filter(k => !S.packSeen.has(k)).forEach(k => notifySup('pack-' + k, 'Bekijk de foto bij Pakketjes en ga zoeken!', '📦 Nieuw pakketje verstopt!'));
+    if (mine && b?.winner === me.team && !b.claimed && S.claimShown !== b.id) { S.claimShown = b.id; S.sheet = { t: 'claim' }; }
+    S.duelSeen = new Set(live.map(x => x.zid + ':' + x.at)); S.buzzSeen = b?.id || ''; S.packSeen = new Set(pk);
+  }
   S.pendSeen = new Set(waiting.map(([id]) => id));
   pushOn();
 
@@ -499,7 +521,7 @@ function onRoom() {
   S.prevOwn = own;
 
   if (m.phase !== 'lobby') {
-    if (me.sup && !S.posSub) { S.posSub = true; S.unsub.push(db.on('pos/' + S.code, v => { S.others = v || {}; updateMap(); })); }
+    if ((me.sup || m.mode === 'duel') && !S.posSub) { S.posSub = true; S.unsub.push(db.on('pos/' + S.code, v => { S.others = v || {}; updateMap(); if (isDuel()) { renderHud(); if (S.sheet?.t === 'sup' && S.sheet.tab === 'spel') renderSheet(); } })); }
     const T = myTeam();
     if (T && ((m.phase === 'travel' && T.arrived) || m.phase === 'playing') && !ls('intro-' + S.code)) { ls('intro-' + S.code, '1'); playIntro(m.mode); }
     if (phase() === 'ended') saveHistory();
@@ -584,7 +606,7 @@ function renderLobby() {
     <div class="bigcode">${m.code}</div>
     <button class="btn ghost small center" data-act="copy" data-t="${esc(link)}">🔗 Kopieer uitnodigingslink</button>
     <div class="facts">
-      <span>${m.mode === 'leger' ? '⚔️ Leger' : '🏰 Verover'}</span><span>📍 ${esc(m.center.name.split(',')[0])}</span><span>⏳ ${fmtDur(m.duration)}</span>
+      <span>${modeLabel(m.mode)}</span><span>📍 ${esc(m.center.name.split(',')[0])}</span><span>⏳ ${fmtDur(m.duration)}</span>
       <span>🗺️ ${zones().length} zones</span><span>🎯 ${Object.keys(S.room.tasks || {}).length} opdrachten${m.taskMode === 'random' ? ' · 🎲 willekeurig' : ''}</span>
     </div>
     ${m.osm ? '' : `<p class="note">Straatdata was niet bereikbaar: de zones zijn organisch getekend zonder straten te volgen.${host ? ' <button class="btn small" data-act="regen">Opnieuw proberen</button>' : ''}</p>`}
@@ -636,6 +658,7 @@ A.startTravel = async () => {
   });
   Object.keys(S.room.players).forEach(pid => { upd[`players/${pid}/team`] = assign[pid] || ''; });
   zones().forEach(z => { upd['zstate/' + z.id] = { owner: '', power: 0 }; });
+  if (m.mode === 'duel') Object.entries(zoneTasks()).forEach(([z, t]) => { upd['ztask/' + z] = t; });
   await db.update(R(), upd);
 };
 
@@ -656,10 +679,12 @@ function updateMap() {
   S.map.setZones(zones().map(z => { const t = teams[zst(z.id).owner]; return { id: z.id, poly: z.poly, color: t ? t.color : '#8a7a5c', op: t ? 0.55 : 0.1 }; }), S.sel);
   S.map.setChips(zones().map(z => {
     const s = zst(z.id), t = teams[s.owner];
-    return { id: z.id, lng: z.c[0], lat: z.c[1], color: t ? t.color : '#8a7a5c', cls: (t ? 'own' : '') + (z.id === S.zoneId ? ' here' : ''), html: (t ? `<b>${seesPower(s.owner) ? s.power : '🛡️'}</b>` : '') + `<span>${esc(z.name)}</span>` };
+    return { id: z.id, lng: z.c[0], lat: z.c[1], color: t ? t.color : '#8a7a5c', cls: (t ? 'own' : '') + (z.id === S.zoneId ? ' here' : ''), html: (t ? `<b>${isDuel() ? (s.locked ? '🔒' : duelOn(z.id) ? '⚔️' : shielded(s.owner) ? '🛡️' : '🚩') : seesPower(s.owner) ? s.power : '🛡️'}</b>` : isDuel() && duelOn(z.id) ? '<b>⚔️</b>' : '') + `<span>${esc(z.name)}</span>` };
   }));
   S.map.setMarkers('me', S.pos ? [{ ...S.pos, html: `<div class="me-dot" style="--c:${T?.color || '#3b2a17'}"></div>` }] : []);
   const start = T && meta().phase === 'travel' ? zoneById(T.start) : null;
+  const bz = isDuel() && buzzOn(); S.lastBuzz = !!bz;
+  S.map.setMarkers('buzz', bz ? [{ lng: bz.lng, lat: bz.lat, anchor: 'bottom', html: '<div class="flag">🚨</div>' }] : []);
   S.map.setMarkers('start', start ? [{ lng: start.c[0], lat: start.c[1], anchor: 'bottom', html: '<div class="flag">🚩</div>' }] : []);
   S.map.setMarkers('others', me?.sup ? Object.entries(S.others).filter(([pid, o]) => pid !== S.pid && db.now() - o.ts < 180000).map(([, o]) => ({ lng: o.lng, lat: o.lat, anchor: 'bottom', html: `<div class="pin" style="--c:${teams[o.team]?.color || '#3b2a17'}">${esc(o.name)}</div>` })) : []);
 }
@@ -671,7 +696,7 @@ function startGps() {
     const m = meta(); if (!m.center) return;
     S.pos = { lat: p.coords.latitude, lng: p.coords.longitude };
     S.zoneId = zoneAt(zones(), m.center, m.radius, S.pos.lng, S.pos.lat);
-    if (db.now() - lastWrite > 20000) { lastWrite = db.now(); const me = Me(); db.set(`pos/${S.code}/${S.pid}`, { ...S.pos, ts: lastWrite, name: me.name, team: me.team || '' }); }
+    if (db.now() - lastWrite > (isDuel() && buzzOn() ? 6000 : 20000)) { lastWrite = db.now(); const me = Me(); db.set(`pos/${S.code}/${S.pid}`, { ...S.pos, ts: lastWrite, name: me.name, team: me.team || '' }); }
     renderHud(); updateMap();
     if (S.sheet?.t === 'zone' || S.sheet?.t === 'task') renderSheet();
   }, e => { S.gpsErr = e.code === 1 ? 'Geef toegang tot je locatie om te kunnen spelen' : 'Geen gps-signaal'; renderHud(); }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
@@ -696,8 +721,10 @@ function renderHud() {
       banner += `<div>${T ? '' : `Groepen op hun startpunt: <b>${n}/${all.length}</b>`} <button class="btn small" data-act="startGame">▶ Start het spel</button></div>`;
     }
   } else if (ph === 'playing') {
-    if (!T && !me.sup) banner = '';
-    else if (S.zoneId) { const z = zoneById(S.zoneId), s = zst(S.zoneId), o = teams[s.owner]; banner = `📍 <b>${esc(z.name)}</b> · ${o ? `<span class="tag" style="--c:${o.color}">${o.name}${seesPower(s.owner) ? ' · ' + s.power : ''}</span>` : 'onbezet'} <button class="btn small" data-act="openZone" data-z="${S.zoneId}">Bekijk</button>`; }
+    const db_ = isDuel() ? duelBanner() : '';
+    if (!T && !me.sup) banner = db_;
+    else if (db_) banner = db_;
+    else if (S.zoneId) { const z = zoneById(S.zoneId), s = zst(S.zoneId), o = teams[s.owner]; banner = `📍 <b>${esc(z.name)}</b> · ${o ? `<span class="tag" style="--c:${o.color}">${o.name}${!isDuel() && seesPower(s.owner) ? ' · ' + s.power : ''}${s.locked ? ' 🔒' : ''}</span>` : isDuel() ? 'vrij' : 'onbezet'} <button class="btn small" data-act="openZone" data-z="${S.zoneId}">Bekijk</button>`; }
     else if (!m.gps || me.sup) banner = 'Tik op een zone op de kaart.';
     else banner = S.pos ? 'Je bent buiten het speelveld.' : esc(S.gpsErr || 'Wachten op gps…');
   } else banner = `🏁 <b>Het spel is afgelopen!</b> <button class="btn small" data-act="sheet" data-t="score">Eindstand</button>`;
@@ -705,6 +732,7 @@ function renderHud() {
   setHTML($('#hud'), `<div class="top">
       <div class="chip" style="--c:${T?.color || '#5a3d22'}">${T ? esc(T.name) : me.sup ? '👑 Leiding' : '…'}</div>
       ${T && m.mode === 'leger' ? `<div class="stat">💰 ${T.money}</div>` : ''}
+      ${T && isDuel() && shielded(me.team) ? `<div class="stat">🛡️ ${cd(T.shieldUntil)}</div>` : ''}
       <div class="stat" id="timer"></div>
       <button class="iconbtn" data-act="sheet" data-t="menu">☰</button>
     </div>
@@ -712,15 +740,25 @@ function renderHud() {
     <nav class="nav">
       ${T ? `<button data-act="sheet" data-t="tasks">🎯<span>Opdrachten</span></button>` : ''}
       ${T && m.mode === 'leger' ? `<button data-act="sheet" data-t="shop">🛒<span>Winkel</span></button>` : ''}
+      ${T && isDuel() ? `<button data-act="sheet" data-t="packs">📦<span>Pakketjes</span>${Object.values(S.room.packs || {}).some(p => !p.usedBy) ? '<i class="badge">!</i>' : ''}</button>` : ''}
       <button data-act="sheet" data-t="score">🏆<span>Stand</span></button>
       ${me.sup ? `<button data-act="sheet" data-t="sup">👑<span>Leiding</span>${pending ? `<i class="badge">${pending}</i>` : ''}</button>` : ''}
     </nav>`);
-  tick();
+  setTimer(); countdowns();
 }
 
-function tick() {
-  const el = $('#timer'), m = meta(); if (!S.room) return;
+function setTimer() {
+  const el = $('#timer'), m = meta();
   if (el) el.textContent = m.phase === 'playing' ? '⏳ ' + fmtTime(m.endsAt - db.now()) : m.phase === 'travel' ? '⏳ ' + fmtDur(m.duration) : '🏁';
+}
+function tick() {
+  const m = meta(); if (!S.room) return;
+  setTimer();
+  if (m.mode === 'duel' && m.phase === 'playing') {
+    duelTimeouts(); renderHud();
+    if (S.lastBuzz !== !!buzzOn()) updateMap();
+  }
+  countdowns();
   if (m.phase === 'playing' && db.now() >= m.endsAt) {
     if (Me()?.sup) db.set(R() + '/meta/phase', 'ended');
     else if (!S.endShown) onRoom();
@@ -737,7 +775,7 @@ A.startGame = async () => {
   const teams = S.room.teams || {}, waiting = Object.values(teams).filter(t => !t.arrived).map(t => t.name);
   if (waiting.length && !await ask({ title: 'Toch starten?', text: `Nog niet op het startpunt: ${waiting.join(', ')}.`, ok: 'Start het spel' })) return;
   const now = db.now(), upd = { 'meta/phase': 'playing', 'meta/startedAt': now, 'meta/endsAt': now + meta().duration * 60000 };
-  Object.entries(teams).forEach(([id, t]) => { upd['zstate/' + t.start] = { owner: id, power: START_POWER }; upd[`teams/${id}/arrived`] = true; });
+  Object.entries(teams).forEach(([id, t]) => { if (meta().mode !== 'duel') upd['zstate/' + t.start] = { owner: id, power: START_POWER }; upd[`teams/${id}/arrived`] = true; });
   await db.update(R(), upd);
   log('Het spel is begonnen. Verover de stad!');
 };
@@ -754,7 +792,12 @@ function renderSheet() {
     s.t = 'task'; s.id = S.room.tasks?.[myTeam().cur] ? myTeam().cur : null;
     if (!s.id) ensureCur();
   }
-  const body = ({ tasks: shTasks, task: shTask, shop: shShop, zone: shZone, sup: shSup, score: shScore, menu: shMenu })[s.t]();
+  if (isDuel() && (s.t === 'tasks' || s.t === 'task') && myTeam()) {
+    // elke vrije zone heeft haar eigen opdracht: wie de zone verlaat, ziet ze niet meer; wie terugkomt, krijgt dezelfde
+    const zid = target(), tid = zid && !zst(zid).owner && S.room.ztask?.[zid];
+    if (tid && S.room.tasks?.[tid]) Object.assign(s, { t: 'task', id: tid, zid }); else Object.assign(s, { t: 'tasks', id: null, zid: null });
+  }
+  const body = ({ tasks: shTasks, task: shTask, duel: shDuel, claim: shClaim, packs: shPacks, shop: shShop, zone: shZone, sup: shSup, score: shScore, menu: shMenu })[s.t]();
   // Het kader wordt één keer opgebouwd (met inschuif-animatie); daarna verandert enkel de inhoud.
   if (el.hidden || !$('.sheet-body', el)) {
     el.hidden = false;
@@ -762,6 +805,7 @@ function renderSheet() {
   }
   const b = $('.sheet-body', el), top = b.scrollTop, same = S.sheetKey === s.t + (s.id || s.zid || s.tab || '');
   if (setHTML(b, body)) b.scrollTop = same ? top : 0;
+  countdowns();
   S.sheetKey = s.t + (s.id || s.zid || s.tab || '');
 }
 
@@ -769,7 +813,7 @@ function renderSheet() {
 const STUCK_MS = 90000;
 const subState = s => ((s.status === 'uploading' || s.status === 'checking') && db.now() - s.ts > STUCK_MS ? 'stuck' : s.status);
 const statusTag = st => ({ uploading: '⏳ wordt verstuurd', checking: '⏳ wordt nagekeken', stuck: '⚠ controle onderbroken', pending: '⏳ bij de leiding', ai_rejected: '✗ afgekeurd door AI', rejected: '✗ afgekeurd', approved: '✓ goedgekeurd' }[st] || '');
-const prize = t => meta().mode === 'leger' ? `💰 ${t.reward}` : `⚔️ +${t.diff}`;
+const prize = t => meta().mode === 'leger' ? `💰 ${t.reward}` : isDuel() ? '🏳️ zone' : `⚔️ +${t.diff}`;
 function lastSubs() {
   const last = {};
   Object.entries(S.room.subs || {}).forEach(([id, s]) => { if (s.team === Me().team && (!last[s.task] || s.ts > last[s.task].ts)) last[s.task] = { ...s, id }; });
@@ -777,6 +821,10 @@ function lastSubs() {
 }
 
 function shTasks() {
+  if (isDuel()) {
+    const zid = target(), o = zid && zst(zid).owner;
+    return `<h2>Opdrachten</h2><p class="note">${!zid ? 'Ga in een zone staan: elke vrije zone heeft haar eigen opdracht.' : o === Me().team ? 'Deze zone is al van jullie. Ga naar een vrije zone voor een nieuwe opdracht.' : 'Deze zone is van een andere groep. Pak ze af met een duel: tik op de zone.'}</p>${notifBtn()}`;
+  }
   const T = myTeam(), done = T.done || {}, last = lastSubs();
   const list = Object.entries(S.room.tasks || {}).map(([id, t]) => ({ id, ...t }));
   const allDone = list.every(t => done[t.id]);
@@ -822,9 +870,9 @@ A.giveTask = d => {
 
 function shTask() {
   if (!S.sheet.id) return '<h2>Opdracht</h2><div class="busy"><div class="spin"></div>Jullie opdracht wordt gekozen…</div>';
-  const t = S.room.tasks[S.sheet.id], T = myTeam(), last = lastSubs()[S.sheet.id], m = meta(), ph = phase();
+  const t = S.room.tasks[S.sheet.id], T = myTeam(), last = isDuel() ? latestSub(S.sheet.id, S.sheet.zid) : lastSubs()[S.sheet.id], m = meta(), ph = phase();
   const list = Object.keys(S.room.tasks), allDone = list.every(id => T.done?.[id]);
-  const done = T.done?.[S.sheet.id] && !allDone, zid = target(), z = zid && zoneById(zid), st = last && subState(last);
+  const done = !isDuel() && T.done?.[S.sheet.id] && !allDone, zid = target(), z = zid && zoneById(zid), st = last && subState(last);
   const upload = `<label class="btn big filebtn">📷 Foto of filmpje maken<input type="file" accept="image/*,video/*" capture="environment" data-file="${S.sheet.id}" hidden></label><p class="hint">Filmpjes: hou ze korter dan 15 seconden.</p>`;
   let action;
   if (S.busy) action = `<div class="busy"><div class="spin"></div>${esc(S.busy)}</div>`;
@@ -832,7 +880,7 @@ function shTask() {
   else if (st === 'checking' || st === 'uploading') action = '<div class="busy"><div class="spin"></div>De scheidsrechter bekijkt jullie bewijs…</div>';
   else if (st === 'pending') action = `<p class="note">⏳ Jullie bewijs ligt bij de leiding.${last.aiErr ? `<small>De automatische controle lukte niet (${esc(last.aiErr)}), dus de leiding beslist.</small>` : ''}</p>`;
   else if (done) action = '<p class="note">✓ Deze opdracht is al voltooid.</p>';
-  else if (m.mode === 'verover' && !z) action = '<p class="note">Ga eerst in een zone staan: de opdracht telt voor de zone waar je bent.</p>';
+  else if ((m.mode === 'verover' || isDuel()) && !z) action = '<p class="note">Ga eerst in een zone staan: de opdracht telt voor de zone waar je bent.</p>';
   else if (st === 'stuck') action = `<p class="note bad">⚠ De controle van jullie bewijs is onderbroken. Probeer opnieuw, of laat de leiding kijken.</p><button class="btn alt" data-act="askSup" data-s="${last.id}">Vraag de leiding om te kijken</button>${upload}`;
   else if (st === 'ai_rejected') action = `<p class="note bad">✗ ${esc(last.ai || 'Niet goedgekeurd')}</p><button class="btn alt" data-act="askSup" data-s="${last.id}">Vraag de leiding om te kijken</button>${upload}`;
   else action = (st === 'rejected' ? '<p class="note bad">✗ Afgekeurd door de leiding. Probeer opnieuw.</p>' : '') + upload;
@@ -846,9 +894,9 @@ function shTask() {
     else skip = `<button class="btn big ghost" data-act="askSkip">🎲 Vraag de leiding om een andere opdracht</button>`;
   }
   action += skip + notifBtn();
-  return `${rnd ? '<p class="hint">🎲 Jullie opdracht</p>' : '<button class="back" data-act="sheet" data-t="tasks">‹ Alle opdrachten</button>'}
+  return `${isDuel() ? '<p class="hint">🎯 Opdracht van deze zone</p>' : rnd ? '<p class="hint">🎲 Jullie opdracht</p>' : '<button class="back" data-act="sheet" data-t="tasks">‹ Alle opdrachten</button>'}
     <h2>${esc(t.title)}</h2><p>${esc(t.desc)}</p>
-    <div class="facts"><span>${'⭐'.repeat(t.diff)}</span><span>${prize(t)}</span>${m.mode === 'verover' && z ? `<span>📍 voor ${esc(z.name)}</span>` : ''}</div>
+    <div class="facts"><span>${'⭐'.repeat(t.diff)}</span><span>${prize(t)}</span>${(m.mode === 'verover' || isDuel()) && z ? `<span>📍 voor ${esc(z.name)}</span>` : ''}</div>
     ${action}`;
 }
 A.askSup = async d => { await db.update(`${R()}/subs/${d.s}`, { status: 'pending' }); ping('sub', d.s); };
@@ -856,15 +904,16 @@ A.askSup = async d => { await db.update(`${R()}/subs/${d.s}`, { status: 'pending
 async function onFile(tid, file) {
   const task = S.room.tasks[tid], me = Me(), m = meta();
   if (!task || phase() !== 'playing') return;
-  const zone = m.mode === 'verover' ? target() : (S.zoneId || '');
-  if (m.mode === 'verover' && !zone) return toast('Ga eerst in een zone staan');
+  const zone = (m.mode === 'verover' || m.mode === 'duel') ? target() : (S.zoneId || '');
+  if ((m.mode === 'verover' || m.mode === 'duel') && !zone) return toast('Ga eerst in een zone staan');
+  if (m.mode === 'duel' && zst(zone).owner) return toast('Deze zone is al van een groep');
   const busy = msg => { S.busy = msg; if (S.sheet?.t === 'task') renderSheet(); };
   busy('Bewijs wordt verwerkt…');
   try {
     const media = await prepareMedia(file);
     const sid = await db.push(R() + '/subs', { team: me.team, task: tid, zone: zone || '', by: me.name, status: 'uploading', ts: db.now(), video: media.video });
     if (media.thumb) await db.set(`photos/${S.code}/${sid}`, media.thumb);
-    if (aiProxyUrl && media.ai) {
+    if (aiProxyUrl && media.ai && m.ai) {
       busy('De scheidsrechter bekijkt je bewijs…');
       let res = null, err = '';
       try { res = await verify(aiProxyUrl, S.code, task, media.ai); } catch (e) { console.warn(e); err = e.message; }
@@ -885,6 +934,10 @@ async function approve(sid) {
   if (meta().mode === 'leger') {
     await db.tx(`${R()}/teams/${sub.team}/money`, v => (v || 0) + task.reward);
     log(`${T.name} voltooide "${task.title}" (+${task.reward} goud)`, sub.team);
+  } else if (isDuel()) {
+    if (!sub.zone) return;
+    const r = await db.tx(`${R()}/zstate/${sub.zone}`, z => (z?.owner ? undefined : { owner: sub.team, power: 0 }));
+    log(r.committed ? `🏳️ ${T.name} claimt ${zoneById(sub.zone).name}` : `${T.name} deed "${task.title}", maar ${zoneById(sub.zone).name} was al geclaimd`, sub.team);
   } else if (sub.zone) await combat(sub.zone, sub.team, task.diff);
 }
 
@@ -932,7 +985,9 @@ function shZone() {
   let body = '';
   if (T && ph === 'playing') {
     const mine = s.owner === me.team;
-    if (!canAct(zid)) body = '<p class="note">Je moet in deze zone staan om hier iets te doen.</p>';
+    if (isDuel() && duelOn(zid)) body = duelZoneBody(zid);
+    else if (!canAct(zid)) body = '<p class="note">Je moet in deze zone staan om hier iets te doen.</p>';
+    else if (isDuel()) body = duelZoneBody(zid);
     else if (m.mode === 'verover') body = `<p>${mine ? 'Versterk deze zone' : 'Verover deze zone'} door hier een opdracht uit te voeren.</p><button class="btn big" data-act="sheet" data-t="tasks">🎯 ${m.taskMode === 'random' ? 'Naar jullie opdracht' : 'Kies een opdracht'}</button>`;
     else {
       const u = T.units || {}, d = S.deploy, P = UNITS.reduce((a, x) => a + (d[x.id] || 0) * x.power, 0);
@@ -946,7 +1001,7 @@ function shZone() {
     }
   }
   return `<h2>${esc(z.name)}</h2>
-    <div class="facts">${o ? `<span class="tag" style="--c:${o.color}">${o.name}</span><span>🛡️ sterkte ${seesPower(s.owner) ? s.power : 'geheim'}</span>` : '<span>🏳️ Onbezet</span>'}${zid === S.zoneId ? '<span>📍 Je bent hier</span>' : ''}</div>${body}`;
+    <div class="facts">${o ? `<span class="tag" style="--c:${o.color}">${o.name}</span>${isDuel() ? `${s.locked ? '<span>🔒 vast</span>' : ''}${shielded(s.owner) ? `<span>🛡️ ${cd(o.shieldUntil)}</span>` : ''}` : `<span>🛡️ sterkte ${seesPower(s.owner) ? s.power : 'geheim'}</span>`}` : `<span>🏳️ ${isDuel() ? 'Vrij' : 'Onbezet'}</span>`}${zid === S.zoneId ? '<span>📍 Je bent hier</span>' : ''}</div>${body}`;
 }
 A.dep = d => {
   const have = myTeam().units?.[d.u] || 0;
@@ -972,7 +1027,7 @@ function score() {
   const teams = S.room.teams || {};
   return Object.entries(teams).map(([id, t]) => {
     const own = zones().filter(z => zst(z.id).owner === id);
-    return { id, ...t, zones: own.length, power: own.reduce((a, z) => a + zst(z.id).power, 0), secret: !seesPower(id) };
+    return { id, ...t, zones: own.length, power: own.reduce((a, z) => a + zst(z.id).power, 0), secret: isDuel() || !seesPower(id) };
   }).sort((a, b) => b.zones - a.zones || b.power - a.power);
 }
 // Gelijke stand (zelfde aantal zones en zelfde sterkte) geeft een gedeelde plaats.
@@ -988,13 +1043,13 @@ function shScore() {
   const ended = phase() === 'ended';
   return `<h2>${ended ? '🏁 Eindstand' : 'Stand'}</h2>
     ${scoreRows(score(), ended)}
-    <p class="hint">Gerangschikt op aantal zones, daarna op totale sterkte.${ended ? '' : ' De sterkte van andere groepen blijft geheim tot het einde.'}</p>`;
+    <p class="hint">${isDuel() ? 'Gerangschikt op aantal zones.' : `Gerangschikt op aantal zones, daarna op totale sterkte.${ended ? '' : ' De sterkte van andere groepen blijft geheim tot het einde.'}`}</p>`;
 }
 
 function shMenu() {
   const m = meta();
   return `<h2>Menu</h2>
-    <div class="facts"><span>Code <b>${m.code}</b></span><span>${m.mode === 'leger' ? '⚔️ Leger' : '🏰 Verover'}</span></div>
+    <div class="facts"><span>Code <b>${m.code}</b></span><span>${modeLabel(m.mode)}</span></div>
     ${notifBtn()}
     <button class="btn big alt" data-act="replay">🎬 Speluitleg opnieuw bekijken</button>
     <button class="btn big alt" data-act="recenter">🧭 Kaart centreren</button>
@@ -1011,7 +1066,7 @@ function givePicker(tid) {
 }
 function shSup() {
   const tab = S.sheet.tab || 'subs', teams = S.room.teams || {}, m = meta(), ph = phase();
-  const tabs = [['subs', 'Inzendingen'], ['teams', 'Groepen'], ['task', 'Opdracht +'], ['spel', 'Spel']];
+  const tabs = isDuel() ? [['subs', 'Inzendingen'], ['teams', 'Groepen'], ['spel', 'Spel'], ['pak', '📦']] : [['subs', 'Inzendingen'], ['teams', 'Groepen'], ['task', 'Opdracht +'], ['spel', 'Spel']];
   let body = '';
   if (tab === 'subs') {
     const order = { pending: 0, stuck: 0, checking: 1, uploading: 1, ai_rejected: 2 };
@@ -1039,18 +1094,23 @@ function shSup() {
       <div class="addtask"><input id="st" maxlength="60" placeholder="Titel"><input id="sd" maxlength="200" placeholder="Wat moeten ze doen?"><input id="sc" maxlength="200" placeholder="Wat moet er op de foto te zien zijn?">
       <select id="sdiff"><option value="1">⭐ Makkelijk</option><option value="2">⭐⭐ Gemiddeld</option><option value="3">⭐⭐⭐ Moeilijk</option></select>
       <button class="btn" data-act="supAddTask">Toevoegen</button></div>`;
+  } else if (tab === 'pak') {
+    body = packPanel();
   } else {
     body = `<div class="facts"><span>Code <b>${m.code}</b></span><span>${{ travel: 'Groepen onderweg', playing: 'Bezig', ended: 'Afgelopen' }[ph]}</span></div>
       ${ph === 'travel' ? '<button class="btn big" data-act="startGame">▶ Start het spel</button>' : ''}
       ${ph === 'playing' ? `<div class="row"><button class="btn alt" data-act="addTime" data-m="10">+10 min</button><button class="btn alt" data-act="addTime" data-m="-10">−10 min</button></div><button class="btn big" data-act="stopGame">⏹ Stop het spel</button>` : ''}
-      ${ph === 'ended' ? '<p class="note">Het spel is afgelopen.</p>' : ''}`;
+      ${ph === 'ended' ? '<p class="note">Het spel is afgelopen.</p>' : ''}
+      ${isDuel() && ph === 'playing' ? buzzPanel() : ''}`;
   }
   const notif = !('Notification' in window) ? '<p class="hint">🔔 Meldingen: zet deze site eerst op je beginscherm (Deel → Zet op beginscherm) en open ze van daar.</p>'
     : Notification.permission === 'granted' ? '' : '<button class="btn alt small" data-act="notifOn">🔔 Meldingen bij nieuw bewijs aanzetten</button>';
   const asks = Object.entries(teams).filter(([, t]) => t.skipReq).map(([id, t]) => `<div class="sub-card"><div><span class="tag" style="--c:${t.color}">${esc(t.name)}</span> wil een andere opdracht</div>
       <small>Nu: <b>${esc(S.room.tasks?.[t.cur]?.title || '?')}</b> · ${esc(S.room.tasks?.[t.cur]?.desc || '')}</small>
       <div class="row"><button class="btn small" data-act="skipOk" data-t="${id}">✓ Geef een andere</button><button class="btn small alt" data-act="skipNo" data-t="${id}">✗ Deze blijven doen</button></div></div>`).join('');
-  body = notif + asks + body;
+  const duels = liveDuels().map(x => `<div class="sub-card"><div>⚔️ <span class="tag" style="--c:${teams[x.att].color}">${esc(teams[x.att].name)}</span> tegen <span class="tag" style="--c:${teams[x.def].color}">${esc(teams[x.def].name)}</span> in <b>${esc(zoneById(x.zid).name)}</b></div>
+      <small>${x.status === 'wait' ? `Verdedigers moeten terug zijn binnen ${cd(x.until)}` : `Bezig: ${esc(DUELS[x.game]?.name)}`}</small><div class="row"><button class="btn small" data-act="duelOpen" data-z="${x.zid}">Bekijk</button></div></div>`).join('');
+  body = notif + duels + asks + body;
   return `<h2>Leiding</h2><div class="tabs">${tabs.map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-act="tab" data-tab="${k}">${l}</button>`).join('')}</div>${body}`;
 }
 A.photo = async d => { S.photos[d.s] = await db.get(`photos/${S.code}/${d.s}`) || 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="60"><text x="10" y="35">Geen beeld beschikbaar</text></svg>'); renderSheet(); };
@@ -1070,6 +1130,239 @@ A.supAddTask = async () => {
   log(`Nieuwe opdracht: "${title}"`);
   S.sheet.tab = 'subs'; renderSheet();
 };
+
+/* ---------- modus Duel ---------- */
+// Vrije zones claim je met de opdracht van die zone (ztask). Een zone van een andere groep pak je af met een duel:
+// de verdedigers krijgen DUEL_MS om terug in de zone te zijn, anders is ze meteen van de aanvallers.
+// Daarnaast buzzer-rondes (de eerste volledige groep krijgt een zone voor altijd) en pakketjes met een code (zones even beschermd).
+const DUEL_MS = 3 * 60000, SHIELD_MS = 10 * 60000, NEAR_M = 40;
+const isDuel = () => meta().mode === 'duel';
+const shielded = tid => (S.room?.teams?.[tid]?.shieldUntil || 0) > db.now();
+const liveDuels = () => Object.entries(S.room?.duels || {}).filter(([, x]) => x.status !== 'done').map(([zid, x]) => ({ zid, ...x }));
+const duelOn = zid => liveDuels().some(x => x.zid === zid);
+const myDuel = () => liveDuels().find(x => x.att === Me()?.team || x.def === Me()?.team);
+const buzzOn = () => { const b = S.room?.buzz; return b && !b.winner && db.now() < b.until ? b : null; };
+const cd = until => `<b class="cd" data-until="${until}"></b>`;
+function countdowns() { $$('[data-until]').forEach(el => { el.textContent = fmtTime(+el.dataset.until - db.now()); }); }
+const packHash = async code => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('stadsspel-pakket:' + code.trim().toUpperCase())))].map(b => b.toString(16).padStart(2, '0')).join('');
+const randCode = () => Array.from({ length: 4 }, () => 'ABCDEFGHJKLMNPRSTUVWXYZ23456789'[Math.random() * 31 | 0]).join('');
+
+// Verdeel de opdrachten over de zones: elke zone krijgt er vast één. Zijn er meer zones dan opdrachten, dan komen ze terug.
+function zoneTasks() {
+  const ids = Object.keys(S.room.tasks || {}), out = {}, mix = a => a.map(v => [Math.random(), v]).sort((x, y) => x[0] - y[0]).map(v => v[1]);
+  let bag = [];
+  mix(zones()).forEach(z => { if (!bag.length) bag = mix(ids); out[z.id] = bag.pop(); });
+  return out;
+}
+function latestSub(task, zone) {
+  let best = null;
+  Object.entries(S.room.subs || {}).forEach(([id, s]) => { if (s.team === Me().team && s.task === task && s.zone === zone && (!best || s.ts > best.ts)) best = { ...s, id }; });
+  return best;
+}
+// Zone van eigenaar laten wisselen, behalve als de buzzer ze vergrendeld heeft.
+const takeZone = (zid, tid) => db.tx(`${R()}/zstate/${zid}`, z => (z?.locked ? undefined : { owner: tid, power: 0 }));
+
+function duelBanner() {
+  const T = myTeam(), me = Me(), teams = S.room.teams || {}, b = buzzOn(), B = S.room.buzz, x = myDuel();
+  if (b) {
+    if (!T) return `🚨 Buzzer-ronde: iedereen naar <b>${esc(b.label)}</b> · ${cd(b.until)}`;
+    const [n, all] = teamHere(me.team);
+    return `🚨 <b>Buzzer!</b> Ren met je hele groep naar <b>${esc(b.label)}</b> · ${cd(b.until)} <span class="tag">${n}/${all} van jullie zijn er</span>
+      <button class="btn small buzzer" data-act="buzz" ${n >= all ? '' : 'disabled'}>🔔 BUZZER</button>`;
+  }
+  if (T && B?.winner === me.team && !B.claimed) return '🏆 Jullie waren eerst bij de buzzer! <button class="btn small" data-act="sheet" data-t="claim">Kies jullie zone</button>';
+  if (T && x) {
+    const Z = esc(zoneById(x.zid).name), other = teams[x.att === me.team ? x.def : x.att];
+    const open = `<button class="btn small" data-act="duelOpen" data-z="${x.zid}">Bekijk</button>`;
+    if (x.status === 'wait') return x.def === me.team ? `⚔️ <b>${esc(teams[x.att].name)}</b> valt <b>${Z}</b> aan! Ren terug: ${cd(x.until)} ${open}` : `⚔️ Wachten op ${esc(other.name)} in <b>${Z}</b> · ${cd(x.until)} ${open}`;
+    return `🤺 Duel tegen ${esc(other.name)} in <b>${Z}</b> ${open}`;
+  }
+  return '';
+}
+
+function duelZoneBody(zid) {
+  const s = zst(zid), teams = S.room.teams || {}, me = Me(), o = teams[s.owner];
+  if (duelOn(zid)) return `<p class="note">⚔️ Hier is een duel bezig.</p><button class="btn big" data-act="duelOpen" data-z="${zid}">Bekijk het duel</button>`;
+  if (!o) return `<p>Deze zone is vrij. Doe de opdracht van deze zone om ze te claimen.</p><button class="btn big" data-act="sheet" data-t="tasks">🎯 Opdracht van deze zone</button>`;
+  if (s.owner === me.team) return `<p class="note">Deze zone is van jullie.${s.locked ? ' 🔒 Niemand kan ze nog afpakken.' : ''}</p>`;
+  if (s.locked) return `<p class="note">🔒 Deze zone is voor de rest van het spel van ${esc(o.name)}.</p>`;
+  if (shielded(s.owner)) return `<p class="note">🛡️ ${esc(o.name)} is nog ${cd(o.shieldUntil)} beschermd door een pakketje.</p>`;
+  if (liveDuels().some(x => x.att === me.team)) return '<p class="note">Jullie zijn al een duel aan het spelen. Eén tegelijk.</p>';
+  return `<p>Deze zone is van ${esc(o.name)}. Pak ze af met een duel: ${esc(o.name)} krijgt een melding en heeft ${DUEL_MS / 60000} minuten om terug te komen. Zijn ze te laat, dan is de zone van jullie.</p>
+    <button class="btn big" data-act="challenge" data-z="${zid}">⚔️ Daag ${esc(o.name)} uit</button>`;
+}
+
+function canChallenge(zid) {
+  const s = zst(zid), me = Me();
+  return isDuel() && phase() === 'playing' && !!me?.team && !!s.owner && s.owner !== me.team && !s.locked && !shielded(s.owner) && !duelOn(zid) && !liveDuels().some(x => x.att === me.team) && canAct(zid);
+}
+A.challenge = async d => {
+  const zid = d.z; if (!canChallenge(zid)) return toast('Een duel is hier nu niet mogelijk');
+  const def = zst(zid).owner, att = Me().team, now = db.now();
+  const r = await db.tx(`${R()}/duels/${zid}`, cur => (cur && cur.status !== 'done' ? undefined : { att, def, game: Math.random() * DUELS.length | 0, at: now, until: now + DUEL_MS, status: 'wait' }));
+  if (!r.committed) return toast('Hier is al een duel bezig');
+  log(`⚔️ ${S.room.teams[att].name} daagt ${S.room.teams[def].name} uit in ${zoneById(zid).name}!`, att);
+  ping('duel', zid);
+  openSheet({ t: 'duel', zid });
+};
+A.duelOpen = d => openSheet({ t: 'duel', zid: d.z });
+A.duelHere = d => db.tx(`${R()}/duels/${d.z}`, x => (x && x.status === 'wait' && db.now() <= x.until ? { ...x, status: 'play', arrivedAt: db.now() } : undefined));
+async function endDuel(zid, winner, why) {
+  const r = await db.tx(`${R()}/duels/${zid}`, x => (x && x.status !== 'done' ? { ...x, status: 'done', winner, endedAt: db.now() } : undefined));
+  if (!r.committed) return;
+  const x = r.value, T = S.room.teams, Z = zoneById(zid).name;
+  if (winner === x.att) { await takeZone(zid, x.att); log(`${why ? why + ': ' : ''}${T[x.att].name} pakt ${Z} af van ${T[x.def].name}!`, x.att); }
+  else log(`${T[x.def].name} wint het duel en houdt ${Z}`, x.def);
+}
+A.duelLost = d => { const x = S.room.duels[d.z]; endDuel(d.z, x.att === Me().team ? x.def : x.att); };
+A.duelWin = d => endDuel(d.z, d.t);
+// Te laat terug: elk toestel in het spel kan dit afhandelen; de transactie zorgt dat het maar één keer gebeurt.
+function duelTimeouts() {
+  S.duelEnding = S.duelEnding || {};
+  liveDuels().filter(x => x.status === 'wait' && db.now() > x.until && !S.duelEnding[x.zid]).forEach(x => {
+    S.duelEnding[x.zid] = true;
+    endDuel(x.zid, x.att, `${S.room.teams[x.def].name} was niet op tijd terug`).finally(() => { S.duelEnding[x.zid] = false; });
+  });
+}
+function shDuel() {
+  const zid = S.sheet.zid, x = S.room.duels?.[zid], T = S.room.teams || {}, me = Me(), z = zoneById(zid);
+  if (!x) return '<h2>Duel</h2><p class="note">Geen duel gevonden.</p>';
+  const g = DUELS[x.game] || DUELS[0], mine = me.team === x.att || me.team === x.def;
+  let body;
+  if (x.status === 'done') body = `<div class="winner" style="--c:${T[x.winner]?.color}">🏆 ${esc(T[x.winner]?.name)} wint</div>`;
+  else if (x.status === 'wait') body = `<p class="note">${esc(T[x.def].name)} moet binnen ${cd(x.until)} terug zijn in ${esc(z.name)}. Anders is de zone van ${esc(T[x.att].name)}.</p>` +
+    (me.team === x.def ? `<button class="btn big" data-act="duelHere" data-z="${zid}" ${canAct(zid) ? '' : 'disabled'}>📍 We zijn er!</button>${canAct(zid) ? '' : '<p class="hint">Deze knop werkt zodra je in de zone staat.</p>'}` : '');
+  else body = '<p>Speel het duel. De groep die verliest, tikt hieronder op "Wij verloren".</p>' + (mine ? `<button class="btn big alt" data-act="duelLost" data-z="${zid}">🏳️ Wij verloren</button>` : '');
+  if (me.sup && x.status !== 'done') body += `<p class="q">De leiding beslist</p><div class="row">${[x.att, x.def].map(t => `<button class="btn small" data-act="duelWin" data-z="${zid}" data-t="${t}">${esc(T[t].name)} wint</button>`).join('')}</div>`;
+  return `<h2>⚔️ Duel in ${esc(z.name)}</h2>
+    <div class="facts"><span class="tag" style="--c:${T[x.att].color}">${esc(T[x.att].name)}</span><span>tegen</span><span class="tag" style="--c:${T[x.def].color}">${esc(T[x.def].name)}</span></div>
+    <div class="duelgame"><b>🎲 ${esc(g.name)}</b><small>${esc(g.desc)}</small></div>${body}`;
+}
+
+// Buzzer: welke leden van een groep staan bij de buzzerplek? Zonder gps telt iedereen als aanwezig (binnen testen).
+function teamHere(tid) {
+  const b = S.room.buzz, mem = Object.entries(S.room.players || {}).filter(([, p]) => p.team === tid && plays(p));
+  if (!meta().gps || !b) return [mem.length, mem.length];
+  const here = mem.filter(([pid]) => {
+    const o = pid === S.pid && S.pos ? { ...S.pos, ts: db.now() } : S.others[pid];
+    return o && db.now() - o.ts < 120000 && dist(o, b) <= NEAR_M;
+  });
+  return [here.length, mem.length];
+}
+A.bzPick = (d, el) => { (S.bz = S.bz || {})[d.k] = el.value; };
+A.takePick = (d, el) => { (S.take = S.take || {})[d.t] = el.value; };
+A.buzzStart = async () => {
+  const bz = S.bz || {}, where = bz.where || (S.pos ? 'here' : zones()[0].id), z = where === 'here' ? null : zoneById(where);
+  const at = z ? { lng: z.c[0], lat: z.c[1] } : S.pos;
+  if (!at) return toast('Kies een plek');
+  const label = z ? z.name : zoneById(S.zoneId)?.name ? 'de leiding in ' + zoneById(S.zoneId).name : 'de leiding';
+  const id = 'b' + rid(), now = db.now();
+  await db.set(R() + '/buzz', { id, label, lng: at.lng, lat: at.lat, at: now, until: now + (+bz.min || 5) * 60000 });
+  log(`🚨 Buzzer-ronde! Iedereen naar ${label}`);
+  ping('buzz', id);
+};
+A.buzzStop = () => db.set(R() + '/buzz/until', db.now());
+A.buzz = async () => {
+  const b = buzzOn(), tid = Me().team; if (!b || !tid) return;
+  const [n, all] = teamHere(tid); if (n < all) return toast('Nog niet iedereen van jullie groep is er');
+  const r = await db.tx(R() + '/buzz/winner', w => (w ? undefined : tid));
+  if (!r.committed) return toast('Te laat: een andere groep was eerst');
+  const present = {}; Object.keys(S.room.teams).forEach(t => { const [h, a] = teamHere(t); present[t] = a > 0 && h >= a; });
+  await db.update(R() + '/buzz', { present, pressedAt: db.now() });
+  log(`🚨 ${S.room.teams[tid].name} drukt als eerste op de buzzer!`, tid);
+  S.claimShown = b.id; openSheet({ t: 'claim' });
+};
+function shClaim() {
+  const b = S.room.buzz, T = S.room.teams || {};
+  if (!b || b.winner !== Me().team) return '<h2>Buzzer</h2><p class="note">Er is niets te kiezen.</p>';
+  if (b.claimed) return `<h2>🏆 Buzzer</h2><p class="note">Jullie kozen ${esc(zoneById(b.claimed).name)}. Die zone blijft tot het einde van jullie.</p>`;
+  return '<h2>🏆 Jullie waren eerst!</h2><p>Kies één zone die tot het einde van het spel van jullie is. Niemand kan ze nog afpakken.</p>' +
+    zones().filter(z => !zst(z.id).locked).map(z => { const o = T[zst(z.id).owner]; return `<button class="titem" data-act="claim" data-z="${z.id}"><div><b>${esc(z.name)}</b><small>${o ? 'nu van ' + esc(o.name) : 'vrij'}</small></div><span class="prize">🔒 kies</span></button>`; }).join('');
+}
+A.claim = async d => {
+  const r = await db.tx(R() + '/buzz/claimed', c => (c ? undefined : d.z)); if (!r.committed) return;
+  if (duelOn(d.z)) await db.update(`${R()}/duels/${d.z}`, { status: 'done', winner: Me().team, endedAt: db.now() });
+  await db.set(`${R()}/zstate/${d.z}`, { owner: Me().team, power: 0, locked: true });
+  log(`🔒 ${myTeam().name} claimt ${zoneById(d.z).name} voor de rest van het spel`, Me().team);
+};
+A.takeAway = async d => {
+  const own = zones().filter(z => zst(z.id).owner === d.t && !zst(z.id).locked), zid = S.take?.[d.t] || own[Math.random() * own.length | 0]?.id;
+  if (!zid) return toast('Deze groep heeft geen zone die afgenomen kan worden');
+  await db.set(`${R()}/zstate/${zid}`, { owner: '', power: 0 });
+  await db.set(`${R()}/buzz/taken/${d.t}`, zid);
+  log(`De leiding neemt ${zoneById(zid).name} af van ${S.room.teams[d.t].name}: niet volledig bij de buzzer`, d.t);
+};
+function buzzPanel() {
+  const b = S.room.buzz, T = S.room.teams || {}, bz = S.bz || {};
+  let h = '<h3 class="gap">🚨 Buzzer-ronde</h3>';
+  if (buzzOn()) return h + `<p class="note">Iedereen naar <b>${esc(b.label)}</b> · nog ${cd(b.until)}</p>` +
+    Object.keys(T).map(t => { const [n, a] = teamHere(t); return `<small><span class="tag" style="--c:${T[t].color}">${esc(T[t].name)}</span> ${n}/${a} aanwezig</small>`; }).join('') +
+    '<button class="btn small alt" data-act="buzzStop">Stop deze ronde</button>';
+  if (b?.winner) {
+    h += `<p class="note">🏆 ${esc(T[b.winner]?.name)} was eerst${b.claimed ? ` en koos ${esc(zoneById(b.claimed)?.name)}` : ' en kiest nog een zone'}.</p>`;
+    h += Object.keys(b.present || {}).filter(t => !b.present[t]).map(t => {
+      if (b.taken?.[t]) return `<small>✓ ${esc(zoneById(b.taken[t])?.name)} afgenomen van ${esc(T[t].name)}</small>`;
+      const own = zones().filter(z => zst(z.id).owner === t && !zst(z.id).locked);
+      return `<div class="sub-card"><div><span class="tag" style="--c:${T[t].color}">${esc(T[t].name)}</span> was niet volledig bij de buzzer</div>${own.length
+        ? `<div class="row give"><select data-chg="takePick" data-t="${t}"><option value="">🎲 Willekeurige zone</option>${own.map(z => `<option value="${z.id}" ${S.take?.[t] === z.id ? 'selected' : ''}>${esc(z.name)}</option>`).join('')}</select><button class="btn small" data-act="takeAway" data-t="${t}">Neem af</button></div>`
+        : '<small>Heeft geen zone die afgenomen kan worden.</small>'}</div>`;
+    }).join('');
+  } else if (b) h += '<p class="hint">Vorige ronde: niemand drukte op tijd.</p>';
+  return h + `<p class="hint">Alle groepen krijgen een melding. De eerste groep die volledig op de plek is en op de buzzer drukt, kiest een zone die tot het einde van hen blijft.</p>
+    <div class="row give"><select data-chg="bzPick" data-k="where">${S.pos ? `<option value="here" ${bz.where === 'here' ? 'selected' : ''}>📍 Waar ik nu sta</option>` : ''}${zones().map(z => `<option value="${z.id}" ${bz.where === z.id ? 'selected' : ''}>${esc(z.name)}</option>`).join('')}</select>
+    <select data-chg="bzPick" data-k="min">${[3, 5, 10, 15].map(n => `<option value="${n}" ${String(bz.min || 5) === String(n) ? 'selected' : ''}>${n} min</option>`).join('')}</select></div>
+    <button class="btn big" data-act="buzzStart">🚨 Start een buzzer-ronde</button>`;
+}
+
+// Pakketjes: de leiding kiest een code, steekt ze in het pakketje en neemt er een close-up foto van.
+// In de database staat enkel een hash van de code. De eerste groep die de code invult, heeft SHIELD_MS beschermde zones.
+function loadPhoto(key) {
+  if (S.photos[key] || S.loadingPh?.[key]) return;
+  (S.loadingPh = S.loadingPh || {})[key] = true;
+  db.get(`photos/${S.code}/${key}`).then(v => { S.photos[key] = v || ''; renderSheet(); });
+}
+function packList() {
+  const T = S.room.teams || {}, P = Object.entries(S.room.packs || {}).sort((a, b) => b[1].at - a[1].at);
+  P.forEach(([id]) => loadPhoto('pack-' + id));
+  return P.map(([id, p]) => `<div class="sub-card ${p.usedBy ? 'closed' : ''}"><small>📦 ${new Date(p.at).toLocaleTimeString('nl-BE', { hour: '2-digit', minute: '2-digit' })} · ${p.usedBy ? 'gevonden door <b>' + esc(T[p.usedBy]?.name) + '</b>' : '<b>nog niet gevonden</b>'}</small>
+    ${S.photos['pack-' + id] ? `<img src="${S.photos['pack-' + id]}" alt="pakketje">` : S.photos['pack-' + id] === '' ? '' : '<div class="busy"><div class="spin"></div>Foto laden…</div>'}</div>`).join('') || '<p class="note">Nog geen pakketjes verstopt.</p>';
+}
+function shPacks() {
+  const T = myTeam();
+  return `<h2>📦 Pakketjes</h2><p class="hint">De leiding verstopt pakketjes in de stad. Vind er een en vul de code in: dan zijn al jullie zones ${SHIELD_MS / 60000} minuten beschermd tegen duels.</p>
+    ${T ? `${shielded(Me().team) ? `<p class="note">🛡️ Jullie zones zijn nog ${cd(T.shieldUntil)} beschermd.</p>` : ''}<div class="row give"><input id="pkin" maxlength="12" placeholder="Code uit het pakketje" autocomplete="off" autocapitalize="characters"><button class="btn small" data-act="packCode">Openen</button></div>` : ''}
+    ${packList()}`;
+}
+A.packCode = async () => {
+  const code = $('#pkin').value; if (!code.trim()) return;
+  const h = await packHash(code), tid = Me().team, hit = Object.entries(S.room.packs || {}).find(([, p]) => p.hash === h);
+  if (!hit) return toast('Die code klopt niet');
+  const r = await db.tx(`${R()}/packs/${hit[0]}/usedBy`, u => (u ? undefined : tid));
+  if (!r.committed) return toast('Dit pakketje is al gevonden door een andere groep');
+  await db.tx(`${R()}/teams/${tid}/shieldUntil`, v => Math.max(v || 0, db.now()) + SHIELD_MS);
+  log(`📦 ${myTeam().name} vond een pakketje: hun zones zijn ${SHIELD_MS / 60000} minuten beschermd!`, tid);
+  $('#pkin').value = '';
+};
+function packPanel() {
+  S.packCode = S.packCode ?? randCode();
+  return `<p class="hint">Kies een code, steek ze in het pakketje en neem een close-up foto. Alle groepen krijgen de foto te zien. De eerste groep die de code invult, heeft ${SHIELD_MS / 60000} minuten beschermde zones.</p>
+    <label>Code in het pakketje<input id="pkcode" maxlength="12" autocomplete="off" autocapitalize="characters" value="${esc(S.packCode)}"></label>
+    <label class="btn big filebtn">📷 Foto maken en pakketje vrijgeven<input type="file" accept="image/*" capture="environment" data-packfile="1" hidden></label>
+    <h3 class="gap">Verstopte pakketjes</h3>${packList()}`;
+}
+async function onPackFile(file) {
+  const code = (S.packCode || '').trim().toUpperCase();
+  if (code.length < 3) return toast('Kies eerst een code van minstens 3 tekens');
+  try {
+    const media = await prepareMedia(file), id = 'p' + rid();
+    if (media.thumb) await db.set(`photos/${S.code}/pack-${id}`, media.thumb);
+    await db.set(`${R()}/packs/${id}`, { at: db.now(), hash: await packHash(code) });
+    log('📦 De leiding heeft een pakketje verstopt! Bekijk de foto bij Pakketjes.');
+    ping('pack', id);
+    S.packCode = randCode(); renderSheet();
+    ask({ title: '📦 Pakketje vrijgegeven', text: `Steek de code ${code} in het pakketje. De groepen zien nu de foto.`, ok: 'Begrepen', cancel: 'Sluiten' });
+  } catch (e) { console.error(e); toast('Er ging iets mis: ' + e.message); }
+}
 
 /* ---------- opruimen ---------- */
 // Verwijdert spellen die al een tijd voorbij zijn, samen met hun foto's en posities, zodat de database niet volloopt.

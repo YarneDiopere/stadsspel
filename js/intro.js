@@ -9,6 +9,14 @@ const tiles = () => {
 
 function scenes(mode) {
   const leger = mode === 'leger';
+  if (mode === 'duel') return [
+    { art: '<div class="in-scroll">🗺️</div><h2 class="in-title">De stad ligt voor het grijpen</h2>', text: 'Vandaag is deze stad jullie speelbord. Er kan maar één groep heersen.' },
+    { art: tiles(), text: 'De stad is verdeeld in zones. Wie de meeste zones heeft wanneer de tijd om is, wint.' },
+    { art: '<div class="in-row"><span class="in-pop">📍</span><span class="in-arrow">➜</span><span class="in-pop d1">📸</span><span class="in-arrow d1">➜</span><span class="in-pop d2">🏳️</span></div>', text: 'Elke vrije zone heeft haar eigen opdracht. Doe ze, bewijs ze met een foto of filmpje, en na goedkeuring is de zone van jullie.' },
+    { art: '<div class="in-row"><span class="in-pop">⚔️</span><span class="in-arrow">➜</span><span class="in-pop d1">⏱️</span><span class="in-arrow d1">➜</span><span class="in-pop d2">🏃</span></div>', text: 'Is een zone van een andere groep? Daag ze uit voor een duel. Zij krijgen een melding en hebben 3 minuten om terug te lopen. Te laat? Dan is de zone van jullie.' },
+    { art: '<div class="in-scroll">🚨</div>', text: 'Soms gaat de buzzer: ren met je hele groep naar de plek. De eerste groep die volledig is en drukt, krijgt een zone voor altijd. Niet volledig? Dan neemt de leiding een zone af.' },
+    { art: '<div class="in-scroll">📦</div>', text: 'De leiding verstopt pakketjes. Vind er een en vul de code in: dan zijn al jullie zones 10 minuten beschermd. Blijf samen en kijk uit in het verkeer!' },
+  ];
   return [
     { art: '<div class="in-scroll">🗺️</div><h2 class="in-title">De stad ligt voor het grijpen</h2>', text: 'Vandaag is deze stad jullie speelbord. Er kan maar één groep heersen.' },
     { art: tiles(), text: 'De stad is verdeeld in zones. Wie de meeste zones bezit wanneer de tijd om is, wint.' },
