@@ -698,7 +698,7 @@ function startGps() {
     S.zoneId = zoneAt(zones(), m.center, m.radius, S.pos.lng, S.pos.lat);
     if (db.now() - lastWrite > (isDuel() && buzzOn() ? 6000 : 20000)) { lastWrite = db.now(); const me = Me(); db.set(`pos/${S.code}/${S.pid}`, { ...S.pos, ts: lastWrite, name: me.name, team: me.team || '' }); }
     renderHud(); updateMap();
-    if (S.sheet?.t === 'zone' || S.sheet?.t === 'task') renderSheet();
+    if (S.sheet?.t === 'zone' || S.sheet?.t === 'task' || (S.sheet?.t === 'sup' && S.sheet.tab === 'spel')) renderSheet();
   }, e => { S.gpsErr = e.code === 1 ? 'Geef toegang tot je locatie om te kunnen spelen' : 'Geen gps-signaal'; renderHud(); }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
 }
 
@@ -1252,10 +1252,10 @@ function teamHere(tid) {
 A.bzPick = (d, el) => { (S.bz = S.bz || {})[d.k] = el.value; };
 A.takePick = (d, el) => { (S.take = S.take || {})[d.t] = el.value; };
 A.buzzStart = async () => {
-  const bz = S.bz || {}, where = bz.where || (S.pos ? 'here' : zones()[0].id), z = where === 'here' ? null : zoneById(where);
-  const at = z ? { lng: z.c[0], lat: z.c[1] } : S.pos;
-  if (!at) return toast('Kies een plek');
-  const label = z ? z.name : zoneById(S.zoneId)?.name ? 'de leiding in ' + zoneById(S.zoneId).name : 'de leiding';
+  // De buzzer staat altijd op de plek waar de leiding die hem start nu staat.
+  const bz = S.bz || {}, at = S.pos;
+  if (!at) return toast('Je locatie is nog niet bekend. Geef de app toegang tot je locatie en wacht op gps.');
+  const label = zoneById(S.zoneId) ? 'de leiding in ' + zoneById(S.zoneId).name : 'de leiding';
   const id = 'b' + rid(), now = db.now();
   await db.set(R() + '/buzz', { id, label, lng: at.lng, lat: at.lat, at: now, until: now + (+bz.min || 5) * 60000 });
   log(`🚨 Buzzer-ronde! Iedereen naar ${label}`);
@@ -1308,10 +1308,10 @@ function buzzPanel() {
         : '<small>Heeft geen zone die afgenomen kan worden.</small>'}</div>`;
     }).join('');
   } else if (b) h += '<p class="hint">Vorige ronde: niemand drukte op tijd.</p>';
-  return h + `<p class="hint">Alle groepen krijgen een melding. De eerste groep die volledig op de plek is en op de buzzer drukt, kiest een zone die tot het einde van hen blijft.</p>
-    <div class="row give"><select data-chg="bzPick" data-k="where">${S.pos ? `<option value="here" ${bz.where === 'here' ? 'selected' : ''}>📍 Waar ik nu sta</option>` : ''}${zones().map(z => `<option value="${z.id}" ${bz.where === z.id ? 'selected' : ''}>${esc(z.name)}</option>`).join('')}</select>
-    <select data-chg="bzPick" data-k="min">${[3, 5, 10, 15].map(n => `<option value="${n}" ${String(bz.min || 5) === String(n) ? 'selected' : ''}>${n} min</option>`).join('')}</select></div>
-    <button class="btn big" data-act="buzzStart">🚨 Start een buzzer-ronde</button>`;
+  return h + `<p class="hint">De buzzer komt op de plek waar jij nu staat. Alle groepen krijgen een melding. De eerste groep die volledig bij jou is en op de buzzer drukt, kiest een zone die tot het einde van hen blijft.</p>
+    <label>Hoe lang hebben ze?<select data-chg="bzPick" data-k="min">${[3, 5, 10, 15].map(n => `<option value="${n}" ${String(bz.min || 5) === String(n) ? 'selected' : ''}>${n} min</option>`).join('')}</select></label>
+    <button class="btn big" data-act="buzzStart" ${S.pos ? '' : 'disabled'}>🚨 Start een buzzer-ronde hier</button>
+    ${S.pos ? `<p class="hint">📍 ${zoneById(S.zoneId) ? 'Je staat in ' + esc(zoneById(S.zoneId).name) : 'Je staat buiten de zones'}.</p>` : `<p class="note">${esc(S.gpsErr || 'Wachten op je gps-locatie…')}</p>`}`;
 }
 
 // Pakketjes: de leiding kiest een code, steekt ze in het pakketje en neemt er een close-up foto van.
