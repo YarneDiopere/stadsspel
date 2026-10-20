@@ -1167,8 +1167,7 @@ function duelBanner() {
   if (b) {
     if (!T) return `🚨 Buzzer-ronde: iedereen naar <b>${esc(b.label)}</b> · ${cd(b.until)}`;
     const [n, all] = teamHere(me.team);
-    return `🚨 <b>Buzzer!</b> Ren met je hele groep naar <b>${esc(b.label)}</b> · ${cd(b.until)} <span class="tag">${n}/${all} van jullie zijn er</span>
-      <button class="btn small buzzer" data-act="buzz" ${n >= all ? '' : 'disabled'}>🔔 BUZZER</button>`;
+    return `🚨 <b>Buzzer!</b> Ren met je hele groep naar <b>${esc(b.label)}</b> en druk op de buzzer · ${cd(b.until)}${meta().gps ? ` <span class="tag">${n}/${all} van jullie zijn er</span>` : ''}`;
   }
   if (T && B?.winner === me.team && !B.claimed) return '🏆 Jullie waren eerst bij de buzzer! <button class="btn small" data-act="sheet" data-t="claim">Kies jullie zone</button>';
   if (T && x) {
@@ -1239,7 +1238,9 @@ function shDuel() {
     <div class="duelgame"><b>🎲 ${esc(g.name)}</b><small>${esc(g.desc)}</small></div>${body}`;
 }
 
-// Buzzer: welke leden van een groep staan bij de buzzerplek? Zonder gps telt iedereen als aanwezig (binnen testen).
+// Buzzer: de leiding start een ronde op haar eigen plek, waar een echte buzzer staat. De groep die als eerste volledig is
+// en drukt, duidt de leiding in de app aan. Die groep kiest een zone die tot het einde van hen blijft (of de leiding kiest voor hen).
+// Groepen die niet volledig waren, kan de leiding een zone afnemen. Het aantal aanwezigen volgens gps helpt daarbij.
 function teamHere(tid) {
   const b = S.room.buzz, mem = Object.entries(S.room.players || {}).filter(([, p]) => p.team === tid && plays(p));
   if (!meta().gps || !b) return [mem.length, mem.length];
@@ -1251,40 +1252,40 @@ function teamHere(tid) {
 }
 A.bzPick = (d, el) => { (S.bz = S.bz || {})[d.k] = el.value; };
 A.takePick = (d, el) => { (S.take = S.take || {})[d.t] = el.value; };
+A.claimPick = (d, el) => { S.claimPick = el.value; };
 A.buzzStart = async () => {
-  // De buzzer staat altijd op de plek waar de leiding die hem start nu staat.
+  // De ronde start altijd op de plek waar de leiding die ze start nu staat.
   const bz = S.bz || {}, at = S.pos;
   if (!at) return toast('Je locatie is nog niet bekend. Geef de app toegang tot je locatie en wacht op gps.');
   const label = zoneById(S.zoneId) ? 'de leiding in ' + zoneById(S.zoneId).name : 'de leiding';
   const id = 'b' + rid(), now = db.now();
+  S.claimPick = null; S.take = {};
   await db.set(R() + '/buzz', { id, label, lng: at.lng, lat: at.lat, at: now, until: now + (+bz.min || 5) * 60000 });
   log(`🚨 Buzzer-ronde! Iedereen naar ${label}`);
   ping('buzz', id);
 };
 A.buzzStop = () => db.set(R() + '/buzz/until', db.now());
-A.buzz = async () => {
-  const b = buzzOn(), tid = Me().team; if (!b || !tid) return;
-  const [n, all] = teamHere(tid); if (n < all) return toast('Nog niet iedereen van jullie groep is er');
-  const r = await db.tx(R() + '/buzz/winner', w => (w ? undefined : tid));
-  if (!r.committed) return toast('Te laat: een andere groep was eerst');
-  const present = {}; Object.keys(S.room.teams).forEach(t => { const [h, a] = teamHere(t); present[t] = a > 0 && h >= a; });
-  await db.update(R() + '/buzz', { present, pressedAt: db.now() });
-  log(`🚨 ${S.room.teams[tid].name} drukt als eerste op de buzzer!`, tid);
-  S.claimShown = b.id; openSheet({ t: 'claim' });
+A.buzzWin = async d => {
+  const r = await db.tx(R() + '/buzz/winner', w => (w ? undefined : d.t));
+  if (!r.committed) return;
+  await db.update(R() + '/buzz', { pressedAt: db.now(), until: db.now() });
+  log(`🚨 ${S.room.teams[d.t].name} drukte als eerste op de buzzer!`, d.t);
 };
 function shClaim() {
   const b = S.room.buzz, T = S.room.teams || {};
   if (!b || b.winner !== Me().team) return '<h2>Buzzer</h2><p class="note">Er is niets te kiezen.</p>';
-  if (b.claimed) return `<h2>🏆 Buzzer</h2><p class="note">Jullie kozen ${esc(zoneById(b.claimed).name)}. Die zone blijft tot het einde van jullie.</p>`;
+  if (b.claimed) return `<h2>🏆 Buzzer</h2><p class="note">${esc(zoneById(b.claimed).name)} blijft tot het einde van het spel van jullie.</p>`;
   return '<h2>🏆 Jullie waren eerst!</h2><p>Kies één zone die tot het einde van het spel van jullie is. Niemand kan ze nog afpakken.</p>' +
     zones().filter(z => !zst(z.id).locked).map(z => { const o = T[zst(z.id).owner]; return `<button class="titem" data-act="claim" data-z="${z.id}"><div><b>${esc(z.name)}</b><small>${o ? 'nu van ' + esc(o.name) : 'vrij'}</small></div><span class="prize">🔒 kies</span></button>`; }).join('');
 }
-A.claim = async d => {
-  const r = await db.tx(R() + '/buzz/claimed', c => (c ? undefined : d.z)); if (!r.committed) return;
-  if (duelOn(d.z)) await db.update(`${R()}/duels/${d.z}`, { status: 'done', winner: Me().team, endedAt: db.now() });
-  await db.set(`${R()}/zstate/${d.z}`, { owner: Me().team, power: 0, locked: true });
-  log(`🔒 ${myTeam().name} claimt ${zoneById(d.z).name} voor de rest van het spel`, Me().team);
-};
+async function claimZone(tid, zid) {
+  const r = await db.tx(R() + '/buzz/claimed', c => (c ? undefined : zid)); if (!r.committed) return;
+  if (duelOn(zid)) await db.update(`${R()}/duels/${zid}`, { status: 'done', winner: tid, endedAt: db.now() });
+  await db.set(`${R()}/zstate/${zid}`, { owner: tid, power: 0, locked: true });
+  log(`🔒 ${S.room.teams[tid].name} claimt ${zoneById(zid).name} voor de rest van het spel`, tid);
+}
+A.claim = d => claimZone(Me().team, d.z);
+A.claimFor = () => { const b = S.room.buzz; if (b?.winner && S.claimPick) claimZone(b.winner, S.claimPick); else toast('Kies eerst een zone'); };
 A.takeAway = async d => {
   const own = zones().filter(z => zst(z.id).owner === d.t && !zst(z.id).locked), zid = S.take?.[d.t] || own[Math.random() * own.length | 0]?.id;
   if (!zid) return toast('Deze groep heeft geen zone die afgenomen kan worden');
@@ -1293,22 +1294,23 @@ A.takeAway = async d => {
   log(`De leiding neemt ${zoneById(zid).name} af van ${S.room.teams[d.t].name}: niet volledig bij de buzzer`, d.t);
 };
 function buzzPanel() {
-  const b = S.room.buzz, T = S.room.teams || {}, bz = S.bz || {};
+  const b = S.room.buzz, T = S.room.teams || {}, bz = S.bz || {}, gps = meta().gps;
   let h = '<h3 class="gap">🚨 Buzzer-ronde</h3>';
-  if (buzzOn()) return h + `<p class="note">Iedereen naar <b>${esc(b.label)}</b> · nog ${cd(b.until)}</p>` +
-    Object.keys(T).map(t => { const [n, a] = teamHere(t); return `<small><span class="tag" style="--c:${T[t].color}">${esc(T[t].name)}</span> ${n}/${a} aanwezig</small>`; }).join('') +
-    '<button class="btn small alt" data-act="buzzStop">Stop deze ronde</button>';
+  if (buzzOn()) return h + `<p class="note">Iedereen naar <b>${esc(b.label)}</b> · nog ${cd(b.until)}</p><p class="hint">Welke groep drukte als eerste op de buzzer? Tik op die groep.</p>` +
+    Object.keys(T).map(t => { const [n, a] = teamHere(t); return `<div class="row bzrow"><button class="btn small" data-act="buzzWin" data-t="${t}">🏆 ${esc(T[t].name)}</button>${gps ? `<small>${n}/${a} aanwezig volgens gps</small>` : ''}</div>`; }).join('') +
+    '<button class="btn small ghost" data-act="buzzStop">Stop deze ronde zonder winnaar</button>';
   if (b?.winner) {
-    h += `<p class="note">🏆 ${esc(T[b.winner]?.name)} was eerst${b.claimed ? ` en koos ${esc(zoneById(b.claimed)?.name)}` : ' en kiest nog een zone'}.</p>`;
-    h += Object.keys(b.present || {}).filter(t => !b.present[t]).map(t => {
+    h += `<p class="note">🏆 ${esc(T[b.winner]?.name)} drukte als eerste${b.claimed ? ` en kreeg ${esc(zoneById(b.claimed)?.name)} voor de rest van het spel.` : '. Ze kiezen nu een zone in hun app, of jij kiest hier voor hen:'}</p>`;
+    if (!b.claimed) h += `<div class="row give"><select data-chg="claimPick"><option value="">Kies een zone…</option>${zones().filter(z => !zst(z.id).locked).map(z => `<option value="${z.id}" ${S.claimPick === z.id ? 'selected' : ''}>${esc(z.name)}${zst(z.id).owner ? ' (' + esc(T[zst(z.id).owner]?.name) + ')' : ''}</option>`).join('')}</select><button class="btn small" data-act="claimFor">Geef</button></div>`;
+    h += '<p class="hint">Was een groep niet volledig bij de buzzer? Neem ze een zone af:</p>' + Object.keys(T).filter(t => t !== b.winner).map(t => {
       if (b.taken?.[t]) return `<small>✓ ${esc(zoneById(b.taken[t])?.name)} afgenomen van ${esc(T[t].name)}</small>`;
       const own = zones().filter(z => zst(z.id).owner === t && !zst(z.id).locked);
-      return `<div class="sub-card"><div><span class="tag" style="--c:${T[t].color}">${esc(T[t].name)}</span> was niet volledig bij de buzzer</div>${own.length
+      return `<div class="sub-card"><div><span class="tag" style="--c:${T[t].color}">${esc(T[t].name)}</span></div>${own.length
         ? `<div class="row give"><select data-chg="takePick" data-t="${t}"><option value="">🎲 Willekeurige zone</option>${own.map(z => `<option value="${z.id}" ${S.take?.[t] === z.id ? 'selected' : ''}>${esc(z.name)}</option>`).join('')}</select><button class="btn small" data-act="takeAway" data-t="${t}">Neem af</button></div>`
         : '<small>Heeft geen zone die afgenomen kan worden.</small>'}</div>`;
     }).join('');
-  } else if (b) h += '<p class="hint">Vorige ronde: niemand drukte op tijd.</p>';
-  return h + `<p class="hint">De buzzer komt op de plek waar jij nu staat. Alle groepen krijgen een melding. De eerste groep die volledig bij jou is en op de buzzer drukt, kiest een zone die tot het einde van hen blijft.</p>
+  } else if (b) h += '<p class="hint">Vorige ronde: geen winnaar.</p>';
+  return h + `<p class="hint">De ronde start op de plek waar jij nu staat, bij de echte buzzer. Alle groepen krijgen een melding. Wie als eerste volledig is en drukt, duid je daarna hier aan.</p>
     <label>Hoe lang hebben ze?<select data-chg="bzPick" data-k="min">${[3, 5, 10, 15].map(n => `<option value="${n}" ${String(bz.min || 5) === String(n) ? 'selected' : ''}>${n} min</option>`).join('')}</select></label>
     <button class="btn big" data-act="buzzStart" ${S.pos ? '' : 'disabled'}>🚨 Start een buzzer-ronde hier</button>
     ${S.pos ? `<p class="hint">📍 ${zoneById(S.zoneId) ? 'Je staat in ' + esc(zoneById(S.zoneId).name) : 'Je staat buiten de zones'}.</p>` : `<p class="note">${esc(S.gpsErr || 'Wachten op je gps-locatie…')}</p>`}`;
