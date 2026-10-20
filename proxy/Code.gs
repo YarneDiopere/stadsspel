@@ -63,6 +63,9 @@ function doPost(e) {
 //   duel = een groep daagt een zone uit           -> naar de leden van de verdedigende groep
 //   buzz = de leiding start een buzzer-ronde      -> naar iedereen in een groep
 //   pack = de leiding verstopte een pakketje      -> naar iedereen in een groep
+//   chat = een chatbericht (kanaal q.ch)          -> 'all': iedereen, groepskanaal: die groep en de leiding (niet naar wie het stuurde)
+//   news = een mededeling van de leiding          -> naar iedereen behalve wie ze stuurde
+//   gps  = iemand geeft geen locatie meer door    -> naar de leiding
 // Het sleutelbestand van het Firebase-serviceaccount staat als FCM_SA in de Scripteigenschappen (de volledige JSON).
 function notify(q) {
   const kind = q.kind || 'sub', id = String(q.id || q.sid || '');
@@ -107,6 +110,20 @@ function notify(q) {
     if (!get('/packs/' + id)) return { error: 'geen pakketje' };
     title = '📦 Nieuw pakketje verstopt!'; tag = 'pack-' + id; to = p => !!p.team;
     body = 'Bekijk de foto bij Pakketjes en ga zoeken.';
+  } else if (kind === 'chat' || kind === 'news') {
+    const ch = String(q.ch || '');
+    if (!/^(all|t\d)$/.test(ch)) return { error: 'ongeldig kanaal' };
+    const msg = get('/chat/' + ch + '/' + id);
+    if (!msg) return { error: 'geen bericht' };
+    if (kind === 'news' && !(msg.news && msg.sup)) return { error: 'geen mededeling' };
+    title = kind === 'news' ? '📢 Mededeling van de leiding' : '💬 ' + msg.by + (ch === 'all' ? '' : ' (privé)');
+    body = String(msg.text || '').slice(0, 150); tag = kind === 'news' ? 'news-' + id : 'chat-' + ch;
+    to = (p, pid) => pid !== msg.pid && (ch === 'all' || p.sup || p.team === ch);
+  } else if (kind === 'gps') {
+    const pl = get('/players/' + id);
+    if (!pl || !pl.gpsOff) return { error: 'locatie is niet uit' };
+    title = '📍 Locatie uit'; tag = 'gps-' + id + ':' + pl.gpsOff.ts; to = p => p.sup;
+    body = pl.name + ' geeft geen locatie meer door. Kijk even waar die is.';
   } else return { error: 'onbekende melding' };
 
   const once = 'n-' + q.code + '-' + kind + '-' + id + '-' + tag;
@@ -117,7 +134,7 @@ function notify(q) {
   const key = JSON.parse(sa), bearer = accessToken(key, cache);
   let sent = 0;
   Object.keys(tokens).forEach(pid => {
-    if (!players[pid] || !to(players[pid])) return;
+    if (!players[pid] || !to(players[pid], pid)) return;
     const r = UrlFetchApp.fetch('https://fcm.googleapis.com/v1/projects/' + key.project_id + '/messages:send', {
       method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + bearer }, muteHttpExceptions: true,
       payload: JSON.stringify({ message: {

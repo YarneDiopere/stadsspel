@@ -83,6 +83,12 @@ document.addEventListener('input', e => {
   if (f && S.draft) { S.draft[f] = e.target.type === 'range' || e.target.type === 'number' ? +e.target.value : e.target.value; syncCreate(f); }
   if (e.target.id === 'loc') searchPlace(e.target.value);
   if (e.target.id === 'pkcode') S.packCode = e.target.value;
+  if (e.target.id === 'newsin') S.newsDraft = e.target.value;
+});
+document.addEventListener('submit', e => {
+  if (e.target.id !== 'chatform') return;
+  e.preventDefault();
+  const i = $('#chatin'); sendChat(i.value, S.sheet?.tab || 'all'); i.value = ''; i.focus();
 });
 document.addEventListener('change', e => {
   const d = e.target.dataset || {};
@@ -211,7 +217,7 @@ function leaveRoom(keep) {
   S.unsub.forEach(u => u()); S.unsub = [];
   if (S.map) { S.map.remove(); S.map = null; } S.mapLoading = false; S.posSub = false;
   if (S.watch != null) { navigator.geolocation.clearWatch(S.watch); S.watch = null; }
-  S.pendSeen = S.prevOwn = S.reqSeen = S.curSeen = S.taskSeen = S.duelSeen = S.buzzSeen = S.packSeen = null;
+  S.pendSeen = S.prevOwn = S.reqSeen = S.curSeen = S.taskSeen = S.duelSeen = S.buzzSeen = S.packSeen = S.chatSeen = S.gpsSeen = null;
   Object.assign(S, { room: null, sheet: null, sel: null, zoneId: null, others: {}, photos: {}, endShown: false, histSaved: false });
   $('#hud')._h = $('#sheet')._h = $('#screen')._h = null;
   $('#sheet').hidden = true;
@@ -243,6 +249,7 @@ async function viewCreate() {
     <div class="step" data-step="1">
       <h2>Waar spelen jullie?</h2>
       <label>Centrum van het spel<input id="loc" autocomplete="off" placeholder="Typ een stad, plein of adres…" value="${esc(d.place?.name || '')}"></label>
+      <button type="button" class="btn small ghost" data-act="useMyLoc">📍 Gebruik mijn huidige locatie</button>
       <div id="sugg" class="sugg"></div>
       <div id="pmap" class="pmap" hidden></div>
       <label>Hoe groot? <b id="radv"></b><input type="range" data-f="radius" min="300" max="1500" step="50" value="${d.radius}"><span class="ends"><i>klein</i><i>groot</i></span></label>
@@ -414,6 +421,21 @@ function searchPlace(q) {
     } catch { box.innerHTML = '<p class="hint">Zoeken lukt even niet</p>'; }
   }, 350);
 }
+A.useMyLoc = (_, btn) => {
+  if (!navigator.geolocation) return toast('Je toestel geeft geen locatie door');
+  const reset = () => { btn.disabled = false; btn.textContent = '📍 Gebruik mijn huidige locatie'; };
+  btn.disabled = true; btn.textContent = '📍 Locatie zoeken…';
+  navigator.geolocation.getCurrentPosition(async p => {
+    const place = { name: 'Mijn locatie', lat: +p.coords.latitude.toFixed(6), lng: +p.coords.longitude.toFixed(6) };
+    try {
+      const pr = (await (await fetch(`https://photon.komoot.io/reverse?lon=${place.lng}&lat=${place.lat}`)).json()).features[0]?.properties;
+      if (pr) place.name = [pr.name || pr.street, pr.city || pr.county].filter(Boolean).join(', ') || place.name;
+    } catch { /* naam blijft "Mijn locatie" */ }
+    reset();
+    if (!S.draft || !$('#loc')) return;
+    S.draft.place = place; $('#loc').value = place.name; $('#sugg').innerHTML = ''; showPreview();
+  }, e => { reset(); toast(e.code === 1 ? 'Geef de app toegang tot je locatie' : 'Je locatie werd niet gevonden'); }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 });
+};
 A.pickPlace = d => { S.draft.place = S.sugg[+d.i]; $('#loc').value = S.draft.place.name; $('#sugg').innerHTML = ''; showPreview(); };
 
 async function showPreview() {
@@ -494,6 +516,23 @@ function onRoom() {
   if (S.taskSeen && mine && m.taskMode !== 'random') tids.filter(id => !S.taskSeen.has(id)).forEach(id => notifySup('task-' + id, S.room.tasks[id].title, '🎯 Nieuwe opdracht'));
   S.curSeen = cur; S.taskSeen = new Set(tids);
 
+  // chat en mededelingen van de leiding
+  const seen = S.chatSeen, now = new Set(), open = S.sheet?.t === 'chat' && !$('#sheet').hidden ? S.sheet.tab : null;
+  chatChannels().forEach(([ch]) => chatMsgsOf(ch).forEach(c => {
+    const k = ch + '/' + c.id; now.add(k);
+    if (!seen || seen.has(k) || c.pid === S.pid) return;
+    if (c.news) { notifySup('news-' + c.id, c.text, '📢 Mededeling van de leiding'); ask({ title: '📢 Mededeling van de leiding', text: c.text, ok: 'OK', cancel: 'Sluiten' }); }
+    else if (open !== ch) { toast(`💬 ${c.by}: ${c.text}`.slice(0, 140), c.sup ? '#5a3d22' : S.room.teams?.[c.team]?.color); notifySup('chat-' + ch, c.text, `💬 ${c.by}${ch === 'all' ? '' : ' (privé)'}`); }
+  }));
+  S.chatSeen = now;
+
+  // leiding: iemand geeft geen locatie meer door (toegang geweigerd of gps uit)
+  if (me.sup) {
+    const off = Object.entries(S.room.players || {}).filter(([, p]) => p.gpsOff).map(([pid, p]) => [pid + ':' + p.gpsOff.ts, p]);
+    if (S.gpsSeen) off.filter(([k]) => !S.gpsSeen.has(k)).forEach(([k, p]) => notifySup('gps-' + k, `${p.name}${S.room.teams?.[p.team] ? ' (' + S.room.teams[p.team].name + ')' : ''} geeft geen locatie meer door. Kijk even waar die is.`, '📍 Locatie uit'));
+    S.gpsSeen = new Set(off.map(([k]) => k));
+  }
+
   // modus Duel: aanval op een zone van jullie, buzzer-ronde, nieuw pakketje
   if (m.mode === 'duel') {
     const live = liveDuels(), b = S.room.buzz, pk = Object.keys(S.room.packs || {});
@@ -503,7 +542,7 @@ function onRoom() {
     });
     if (S.buzzSeen != null && b?.id && b.id !== S.buzzSeen && mine) notifySup('buzz-' + b.id, `Ren met je hele groep naar ${b.label}!`, '🚨 Buzzer!');
     if (S.packSeen && mine) pk.filter(k => !S.packSeen.has(k)).forEach(k => notifySup('pack-' + k, 'Bekijk de foto bij Pakketjes en ga zoeken!', '📦 Nieuw pakketje verstopt!'));
-    if (mine && b?.winner === me.team && !b.claimed && S.claimShown !== b.id) { S.claimShown = b.id; S.sheet = { t: 'claim' }; }
+    if (mine && b?.winner === me.team && !b.claimed && lockable(me.team).length && S.claimShown !== b.id) { S.claimShown = b.id; S.sheet = { t: 'claim' }; }
     S.duelSeen = new Set(live.map(x => x.zid + ':' + x.at)); S.buzzSeen = b?.id || ''; S.packSeen = new Set(pk);
   }
   S.pendSeen = new Set(waiting.map(([id]) => id));
@@ -550,8 +589,8 @@ async function pushOn() {
   try { const tok = await db.pushToken(vapidKey); if (tok) await db.set(`${R()}/push/${S.pid}`, tok); } catch (e) { console.warn('Pushmeldingen lukken niet', e); }
 }
 // soort: 'sub' (bewijs wacht op de leiding), 'skip' (groep vraagt een andere opdracht), 'task' (groep kreeg een opdracht), 'new' (opdracht toegevoegd)
-function ping(kind, id) {
-  if (aiProxyUrl && vapidKey) fetch(aiProxyUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action: 'notify', code: S.code, kind, id }) }).catch(e => console.warn(e));
+function ping(kind, id, ch) {
+  if (aiProxyUrl && vapidKey) fetch(aiProxyUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action: 'notify', code: S.code, kind, id, ch }) }).catch(e => console.warn(e));
 }
 const notifBtn = () => (!('Notification' in window) || Notification.permission !== 'default' ? '' : '<button class="btn alt small center" data-act="notifOn">🔔 Meldingen bij een nieuwe opdracht aanzetten</button>');
 A.notifOn = async () => {
@@ -686,20 +725,35 @@ function updateMap() {
   const bz = isDuel() && buzzOn(); S.lastBuzz = !!bz;
   S.map.setMarkers('buzz', bz ? [{ lng: bz.lng, lat: bz.lat, anchor: 'bottom', html: '<div class="flag">🚨</div>' }] : []);
   S.map.setMarkers('start', start ? [{ lng: start.c[0], lat: start.c[1], anchor: 'bottom', html: '<div class="flag">🚩</div>' }] : []);
-  S.map.setMarkers('others', me?.sup ? Object.entries(S.others).filter(([pid, o]) => pid !== S.pid && db.now() - o.ts < 180000).map(([, o]) => ({ lng: o.lng, lat: o.lat, anchor: 'bottom', html: `<div class="pin" style="--c:${teams[o.team]?.color || '#3b2a17'}">${esc(o.name)}</div>` })) : []);
+  // Leiding ziet iedereen; wie al even geen locatie doorgaf, staat grijs met de laatst gekende plek.
+  S.map.setMarkers('others', me?.sup ? Object.entries(S.others).filter(([pid, o]) => pid !== S.pid && db.now() - o.ts < 1800000).map(([pid, o]) => {
+    const age = db.now() - o.ts, off = S.room.players?.[pid]?.gpsOff;
+    return { lng: o.lng, lat: o.lat, anchor: 'bottom', html: `<div class="pin ${age > 180000 || off ? 'stale' : ''}" style="--c:${teams[o.team]?.color || '#3b2a17'}">${off ? '⚠ ' : ''}${esc(o.name)}${age > 180000 ? ' · ' + Math.round(age / 60000) + ' min' : ''}</div>` };
+  }) : []);
+  S.map.setMarkers('packs', me?.sup && isDuel() ? Object.values(S.room.packs || {}).filter(p => !p.usedBy && p.lat != null).map(p => ({ lng: p.lng, lat: p.lat, anchor: 'bottom', html: '<div class="flag pack">📦</div>' })) : []);
 }
 
+// Locatie kwijt (toegang geweigerd, of al een minuut geen gps): meld het aan de leiding, zodat die kan gaan kijken.
+function gpsLost(code) {
+  const me = Me();
+  if (!S.room || meta().phase === 'lobby' || !plays(me) || me.gpsOff) return;
+  if (code !== 1 && db.now() - (S.lastFix || S.gpsStart) < 60000) return;
+  db.set(`${R()}/players/${S.pid}/gpsOff`, { code, ts: db.now() }).then(() => ping('gps', S.pid));
+}
 function startGps() {
   if (S.watch != null || !navigator.geolocation) return;
   let lastWrite = 0;
+  S.gpsStart = db.now();
   S.watch = navigator.geolocation.watchPosition(p => {
     const m = meta(); if (!m.center) return;
+    S.lastFix = db.now(); S.gpsErr = null;
+    if (Me()?.gpsOff) db.set(`${R()}/players/${S.pid}/gpsOff`, null);
     S.pos = { lat: p.coords.latitude, lng: p.coords.longitude };
     S.zoneId = zoneAt(zones(), m.center, m.radius, S.pos.lng, S.pos.lat);
     if (db.now() - lastWrite > (isDuel() && buzzOn() ? 6000 : 20000)) { lastWrite = db.now(); const me = Me(); db.set(`pos/${S.code}/${S.pid}`, { ...S.pos, ts: lastWrite, name: me.name, team: me.team || '' }); }
     renderHud(); updateMap();
     if (S.sheet?.t === 'zone' || S.sheet?.t === 'task' || (S.sheet?.t === 'sup' && S.sheet.tab === 'spel')) renderSheet();
-  }, e => { S.gpsErr = e.code === 1 ? 'Geef toegang tot je locatie om te kunnen spelen' : 'Geen gps-signaal'; renderHud(); }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
+  }, e => { S.gpsErr = e.code === 1 ? 'Geef toegang tot je locatie om te kunnen spelen' : 'Geen gps-signaal'; renderHud(); gpsLost(e.code); }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
 }
 
 /* ---------- HUD ---------- */
@@ -741,6 +795,7 @@ function renderHud() {
       ${T ? `<button data-act="sheet" data-t="tasks">🎯<span>Opdrachten</span></button>` : ''}
       ${T && m.mode === 'leger' ? `<button data-act="sheet" data-t="shop">🛒<span>Winkel</span></button>` : ''}
       ${T && isDuel() ? `<button data-act="sheet" data-t="packs">📦<span>Pakketjes</span>${Object.values(S.room.packs || {}).some(p => !p.usedBy) ? '<i class="badge">!</i>' : ''}</button>` : ''}
+      <button data-act="sheet" data-t="chat">💬<span>Chat</span>${unreadAll() ? `<i class="badge">${unreadAll()}</i>` : ''}</button>
       <button data-act="sheet" data-t="score">🏆<span>Stand</span></button>
       ${me.sup ? `<button data-act="sheet" data-t="sup">👑<span>Leiding</span>${pending ? `<i class="badge">${pending}</i>` : ''}</button>` : ''}
     </nav>`);
@@ -797,7 +852,14 @@ function renderSheet() {
     const zid = target(), tid = zid && !zst(zid).owner && S.room.ztask?.[zid];
     if (tid && S.room.tasks?.[tid]) Object.assign(s, { t: 'task', id: tid, zid }); else Object.assign(s, { t: 'tasks', id: null, zid: null });
   }
-  const body = ({ tasks: shTasks, task: shTask, duel: shDuel, claim: shClaim, packs: shPacks, shop: shShop, zone: shZone, sup: shSup, score: shScore, menu: shMenu })[s.t]();
+  // Chat: enkel de berichten verversen, zodat het invulveld en de scrollpositie blijven staan.
+  if (s.t === 'chat' && !el.hidden && S.sheetKey === 'chat' + s.tab && $('#chatmsgs', el)) {
+    const box = $('#chatmsgs', el), end = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+    markRead(s.tab); setHTML($('#chattabs', el), chatTabs(s.tab));
+    if (setHTML(box, chatMsgs(s.tab)) && end) box.scrollTop = box.scrollHeight;
+    return;
+  }
+  const body = ({ chat: shChat, tasks: shTasks, task: shTask, duel: shDuel, claim: shClaim, packs: shPacks, shop: shShop, zone: shZone, sup: shSup, score: shScore, menu: shMenu })[s.t]();
   // Het kader wordt één keer opgebouwd (met inschuif-animatie); daarna verandert enkel de inhoud.
   if (el.hidden || !$('.sheet-body', el)) {
     el.hidden = false;
@@ -807,6 +869,7 @@ function renderSheet() {
   if (setHTML(b, body)) b.scrollTop = same ? top : 0;
   countdowns();
   S.sheetKey = s.t + (s.id || s.zid || s.tab || '');
+  if (s.t === 'chat') { const box = $('#chatmsgs', el); if (box) box.scrollTop = box.scrollHeight; }
 }
 
 // Een inzending die na anderhalve minuut nog niet nagekeken is, is onderweg blijven steken (app gesloten, geen bereik).
@@ -1082,10 +1145,14 @@ function shSup() {
       </div>`; }).join('') || '<p class="note">Nog geen inzendingen.</p>';
   } else if (tab === 'teams') {
     body = (m.taskMode === 'random' && ph !== 'ended' ? `<div class="sub-card"><div><b>Alle groepen tegelijk</b></div>${givePicker('all')}</div>` : '') + Object.entries(teams).map(([id, t]) => {
-      const members = Object.values(S.room.players).filter(p => p.team === id).map(p => p.name).join(', ');
+      const members = Object.entries(S.room.players).filter(([, p]) => p.team === id).map(([pid, p]) => {
+        const o = S.others[pid], age = o ? db.now() - o.ts : 0;
+        const st = p.gpsOff ? '<b class="bad">⚠ locatie uit</b>' : !o ? 'nog geen locatie' : age < 90000 ? '📍 nu' : `📍 ${Math.round(age / 60000)} min geleden`;
+        return `${esc(p.name)} <span class="hint">${st}</span>`;
+      }).join(' · ');
       const give = m.taskMode === 'random' && ph !== 'ended' ? `<small>🎯 Nu bezig met: <b>${esc(S.room.tasks?.[t.cur]?.title || 'nog geen opdracht')}</b></small>${givePicker(id)}` : '';
       return `<div class="sub-card"><div><span class="tag" style="--c:${t.color}">${esc(t.name)}</span> ${m.mode === 'leger' ? `💰 ${t.money}` : ''} ${ph === 'travel' ? (t.arrived ? '✅ op startpunt' : `🚶 onderweg naar ${esc(zoneById(t.start)?.name)}`) : ''}</div>
-        <small>${esc(members) || 'geen spelers'}</small>${give}
+        <small>${members || 'geen spelers'}</small>${give}
         <div class="row">${m.mode === 'leger' ? `<button class="btn small" data-act="money" data-t="${id}" data-d="20">+20 goud</button><button class="btn small alt" data-act="money" data-t="${id}" data-d="-20">−20 goud</button>` : ''}
         ${ph === 'travel' && !t.arrived ? `<button class="btn small ghost" data-act="markArrived" data-t="${id}">Is aangekomen</button>` : ''}</div></div>`;
     }).join('');
@@ -1101,6 +1168,8 @@ function shSup() {
       ${ph === 'travel' ? '<button class="btn big" data-act="startGame">▶ Start het spel</button>' : ''}
       ${ph === 'playing' ? `<div class="row"><button class="btn alt" data-act="addTime" data-m="10">+10 min</button><button class="btn alt" data-act="addTime" data-m="-10">−10 min</button></div><button class="btn big" data-act="stopGame">⏹ Stop het spel</button>` : ''}
       ${ph === 'ended' ? '<p class="note">Het spel is afgelopen.</p>' : ''}
+      ${ph !== 'ended' ? `<h3 class="gap">📢 Mededeling</h3><p class="hint">Iedereen krijgt ze meteen te zien, met een melding. Ze komt ook in de algemene chat.</p>
+        <div class="row give"><input id="newsin" maxlength="300" autocomplete="off" placeholder="Bv. Nog 10 minuten!" value="${esc(S.newsDraft || '')}"><button class="btn small" data-act="sendNews">Verstuur</button></div>` : ''}
       ${isDuel() && ph === 'playing' ? buzzPanel() : ''}`;
   }
   const notif = !('Notification' in window) ? '<p class="hint">🔔 Meldingen: zet deze site eerst op je beginscherm (Deel → Zet op beginscherm) en open ze van daar.</p>'
@@ -1134,7 +1203,7 @@ A.supAddTask = async () => {
 /* ---------- modus Duel ---------- */
 // Vrije zones claim je met de opdracht van die zone (ztask). Een zone van een andere groep pak je af met een duel:
 // de verdedigers krijgen DUEL_MS om terug in de zone te zijn, anders is ze meteen van de aanvallers.
-// Daarnaast buzzer-rondes (de eerste volledige groep krijgt een zone voor altijd) en pakketjes met een code (zones even beschermd).
+// Daarnaast buzzer-rondes (de eerste volledige groep zet één van haar zones voorgoed vast) en pakketjes met een code (zones even beschermd).
 const DUEL_MS = 3 * 60000, SHIELD_MS = 10 * 60000, NEAR_M = 40;
 const isDuel = () => meta().mode === 'duel';
 const shielded = tid => (S.room?.teams?.[tid]?.shieldUntil || 0) > db.now();
@@ -1169,7 +1238,7 @@ function duelBanner() {
     const [n, all] = teamHere(me.team);
     return `🚨 <b>Buzzer!</b> Ren met je hele groep naar <b>${esc(b.label)}</b> en druk op de buzzer · ${cd(b.until)}${meta().gps ? ` <span class="tag">${n}/${all} van jullie zijn er</span>` : ''}`;
   }
-  if (T && B?.winner === me.team && !B.claimed) return '🏆 Jullie waren eerst bij de buzzer! <button class="btn small" data-act="sheet" data-t="claim">Kies jullie zone</button>';
+  if (T && B?.winner === me.team && !B.claimed && lockable(me.team).length) return '🏆 Jullie waren eerst bij de buzzer! <button class="btn small" data-act="sheet" data-t="claim">Zet een zone vast</button>';
   if (T && x) {
     const Z = esc(zoneById(x.zid).name), other = teams[x.att === me.team ? x.def : x.att];
     const open = `<button class="btn small" data-act="duelOpen" data-z="${x.zid}">Bekijk</button>`;
@@ -1239,7 +1308,7 @@ function shDuel() {
 }
 
 // Buzzer: de leiding start een ronde op haar eigen plek, waar een echte buzzer staat. De groep die als eerste volledig is
-// en drukt, duidt de leiding in de app aan. Die groep kiest een zone die tot het einde van hen blijft (of de leiding kiest voor hen).
+// en drukt, duidt de leiding in de app aan. Die groep zet één van haar eigen zones vast tot het einde (of de leiding doet het voor hen).
 // Groepen die niet volledig waren, kan de leiding een zone afnemen. Het aantal aanwezigen volgens gps helpt daarbij.
 function teamHere(tid) {
   const b = S.room.buzz, mem = Object.entries(S.room.players || {}).filter(([, p]) => p.team === tid && plays(p));
@@ -1271,18 +1340,23 @@ A.buzzWin = async d => {
   await db.update(R() + '/buzz', { pressedAt: db.now(), until: db.now() });
   log(`🚨 ${S.room.teams[d.t].name} drukte als eerste op de buzzer!`, d.t);
 };
+const lockable = tid => zones().filter(z => zst(z.id).owner === tid && !zst(z.id).locked);
 function shClaim() {
-  const b = S.room.buzz, T = S.room.teams || {};
+  const b = S.room.buzz;
   if (!b || b.winner !== Me().team) return '<h2>Buzzer</h2><p class="note">Er is niets te kiezen.</p>';
   if (b.claimed) return `<h2>🏆 Buzzer</h2><p class="note">${esc(zoneById(b.claimed).name)} blijft tot het einde van het spel van jullie.</p>`;
-  return '<h2>🏆 Jullie waren eerst!</h2><p>Kies één zone die tot het einde van het spel van jullie is. Niemand kan ze nog afpakken.</p>' +
-    zones().filter(z => !zst(z.id).locked).map(z => { const o = T[zst(z.id).owner]; return `<button class="titem" data-act="claim" data-z="${z.id}"><div><b>${esc(z.name)}</b><small>${o ? 'nu van ' + esc(o.name) : 'vrij'}</small></div><span class="prize">🔒 kies</span></button>`; }).join('');
+  const own = lockable(Me().team);
+  if (!own.length) return '<h2>🏆 Jullie waren eerst!</h2><p class="note">Jullie hebben nog geen zone die je kan vastzetten. Claim eerst een zone met een opdracht.</p>';
+  return '<h2>🏆 Jullie waren eerst!</h2><p>Kies één van jullie zones. Die blijft tot het einde van het spel van jullie: niemand kan ze nog afpakken.</p>' +
+    own.map(z => `<button class="titem" data-act="claim" data-z="${z.id}"><div><b>${esc(z.name)}</b></div><span class="prize">🔒 vastzetten</span></button>`).join('');
 }
 async function claimZone(tid, zid) {
+  if (zst(zid).owner !== tid || zst(zid).locked) return toast('Enkel een eigen zone kan vastgezet worden');
   const r = await db.tx(R() + '/buzz/claimed', c => (c ? undefined : zid)); if (!r.committed) return;
+  const z = await db.tx(`${R()}/zstate/${zid}`, s => (s && s.owner === tid && !s.locked ? { ...s, locked: true } : undefined));
+  if (!z.committed) { await db.set(R() + '/buzz/claimed', null); return toast('Die zone is intussen niet meer van deze groep'); }
   if (duelOn(zid)) await db.update(`${R()}/duels/${zid}`, { status: 'done', winner: tid, endedAt: db.now() });
-  await db.set(`${R()}/zstate/${zid}`, { owner: tid, power: 0, locked: true });
-  log(`🔒 ${S.room.teams[tid].name} claimt ${zoneById(zid).name} voor de rest van het spel`, tid);
+  log(`🔒 ${S.room.teams[tid].name} zet ${zoneById(zid).name} vast voor de rest van het spel`, tid);
 }
 A.claim = d => claimZone(Me().team, d.z);
 A.claimFor = () => { const b = S.room.buzz; if (b?.winner && S.claimPick) claimZone(b.winner, S.claimPick); else toast('Kies eerst een zone'); };
@@ -1300,8 +1374,9 @@ function buzzPanel() {
     Object.keys(T).map(t => { const [n, a] = teamHere(t); return `<div class="row bzrow"><button class="btn small" data-act="buzzWin" data-t="${t}">🏆 ${esc(T[t].name)}</button>${gps ? `<small>${n}/${a} aanwezig volgens gps</small>` : ''}</div>`; }).join('') +
     '<button class="btn small ghost" data-act="buzzStop">Stop deze ronde zonder winnaar</button>';
   if (b?.winner) {
-    h += `<p class="note">🏆 ${esc(T[b.winner]?.name)} drukte als eerste${b.claimed ? ` en kreeg ${esc(zoneById(b.claimed)?.name)} voor de rest van het spel.` : '. Ze kiezen nu een zone in hun app, of jij kiest hier voor hen:'}</p>`;
-    if (!b.claimed) h += `<div class="row give"><select data-chg="claimPick"><option value="">Kies een zone…</option>${zones().filter(z => !zst(z.id).locked).map(z => `<option value="${z.id}" ${S.claimPick === z.id ? 'selected' : ''}>${esc(z.name)}${zst(z.id).owner ? ' (' + esc(T[zst(z.id).owner]?.name) + ')' : ''}</option>`).join('')}</select><button class="btn small" data-act="claimFor">Geef</button></div>`;
+    const own = lockable(b.winner);
+    h += `<p class="note">🏆 ${esc(T[b.winner]?.name)} drukte als eerste${b.claimed ? ` en zette ${esc(zoneById(b.claimed)?.name)} vast voor de rest van het spel.` : own.length ? '. Ze zetten nu één van hun zones vast in hun app, of jij doet het hier voor hen:' : ', maar heeft nog geen zone om vast te zetten.'}</p>`;
+    if (!b.claimed && own.length) h += `<div class="row give"><select data-chg="claimPick"><option value="">Kies een zone…</option>${own.map(z => `<option value="${z.id}" ${S.claimPick === z.id ? 'selected' : ''}>${esc(z.name)}</option>`).join('')}</select><button class="btn small" data-act="claimFor">Zet vast</button></div>`;
     h += '<p class="hint">Was een groep niet volledig bij de buzzer? Neem ze een zone af:</p>' + Object.keys(T).filter(t => t !== b.winner).map(t => {
       if (b.taken?.[t]) return `<small>✓ ${esc(zoneById(b.taken[t])?.name)} afgenomen van ${esc(T[t].name)}</small>`;
       const own = zones().filter(z => zst(z.id).owner === t && !zst(z.id).locked);
@@ -1310,7 +1385,7 @@ function buzzPanel() {
         : '<small>Heeft geen zone die afgenomen kan worden.</small>'}</div>`;
     }).join('');
   } else if (b) h += '<p class="hint">Vorige ronde: geen winnaar.</p>';
-  return h + `<p class="hint">De ronde start op de plek waar jij nu staat, bij de echte buzzer. Alle groepen krijgen een melding. Wie als eerste volledig is en drukt, duid je daarna hier aan.</p>
+  return h + `<p class="hint">De ronde start op de plek waar jij nu staat, bij de echte buzzer. Alle groepen krijgen een melding. Wie als eerste volledig is en drukt, duid je daarna hier aan; die groep mag één van haar zones voorgoed vastzetten.</p>
     <label>Hoe lang hebben ze?<select data-chg="bzPick" data-k="min">${[3, 5, 10, 15].map(n => `<option value="${n}" ${String(bz.min || 5) === String(n) ? 'selected' : ''}>${n} min</option>`).join('')}</select></label>
     <button class="btn big" data-act="buzzStart" ${S.pos ? '' : 'disabled'}>🚨 Start een buzzer-ronde hier</button>
     ${S.pos ? `<p class="hint">📍 ${zoneById(S.zoneId) ? 'Je staat in ' + esc(zoneById(S.zoneId).name) : 'Je staat buiten de zones'}.</p>` : `<p class="note">${esc(S.gpsErr || 'Wachten op je gps-locatie…')}</p>`}`;
@@ -1349,6 +1424,7 @@ A.packCode = async () => {
 function packPanel() {
   S.packCode = S.packCode ?? randCode();
   return `<p class="hint">Kies een code, steek ze in het pakketje en neem een close-up foto. Alle groepen krijgen de foto te zien. De eerste groep die de code invult, heeft ${SHIELD_MS / 60000} minuten beschermde zones.</p>
+    <p class="hint">${S.pos ? '📍 De plek waar je nu staat wordt bewaard: enkel de leiding ziet het pakketje op de kaart, tot het gevonden is.' : '⚠ Je locatie is niet bekend: dit pakketje komt niet op de kaart.'}</p>
     <label>Code in het pakketje<input id="pkcode" maxlength="12" autocomplete="off" autocapitalize="characters" value="${esc(S.packCode)}"></label>
     <label class="btn big filebtn">📷 Foto maken en pakketje vrijgeven<input type="file" accept="image/*" capture="environment" data-packfile="1" hidden></label>
     <h3 class="gap">Verstopte pakketjes</h3>${packList()}`;
@@ -1359,13 +1435,56 @@ async function onPackFile(file) {
   try {
     const media = await prepareMedia(file), id = 'p' + rid();
     if (media.thumb) await db.set(`photos/${S.code}/pack-${id}`, media.thumb);
-    await db.set(`${R()}/packs/${id}`, { at: db.now(), hash: await packHash(code), code });
+    await db.set(`${R()}/packs/${id}`, { at: db.now(), hash: await packHash(code), code, ...(S.pos ? { lat: S.pos.lat, lng: S.pos.lng } : {}) });
     log('📦 De leiding heeft een pakketje verstopt! Bekijk de foto bij Pakketjes.');
     ping('pack', id);
     S.packCode = randCode(); renderSheet();
     ask({ title: '📦 Pakketje vrijgegeven', text: `Steek de code ${code} in het pakketje. De groepen zien nu de foto.`, ok: 'Begrepen', cancel: 'Sluiten' });
   } catch (e) { console.error(e); toast('Er ging iets mis: ' + e.message); }
 }
+
+/* ---------- chat en mededelingen ---------- */
+// Kanaal 'all' leest iedereen. Elke groep heeft een eigen kanaal (zelfde naam als de groep, bv. 't0') met enkel de leiding.
+// Mededelingen van de leiding zijn berichten in 'all' met news: true; die verschijnen bij iedereen als venster met melding.
+function chatChannels() {
+  const me = Me(), T = S.room?.teams || {};
+  if (me?.sup) return [['all', '📣 Iedereen'], ...Object.entries(T).map(([id, t]) => [id, '🔒 ' + t.name])];
+  return [['all', '📣 Iedereen'], ...(me?.team && T[me.team] ? [[me.team, '🔒 Leiding']] : [])];
+}
+const chatMsgsOf = ch => Object.entries(S.room?.chat?.[ch] || {}).map(([id, c]) => ({ id, ...c })).sort((a, b) => a.ts - b.ts);
+const readAt = ch => +(ls(`read-${S.code}-${ch}`) || 0);
+function markRead(ch) { const l = chatMsgsOf(ch).pop(); if (l && l.ts > readAt(ch)) ls(`read-${S.code}-${ch}`, l.ts); }
+const unread = ch => chatMsgsOf(ch).filter(c => c.ts > readAt(ch) && c.pid !== S.pid).length;
+const unreadAll = () => chatChannels().reduce((a, [ch]) => a + unread(ch), 0);
+function chatTabs(cur) {
+  return chatChannels().map(([k, l]) => { const n = k === cur ? 0 : unread(k); return `<button class="${k === cur ? 'on' : ''}" data-act="tab" data-tab="${k}">${esc(l)}${n ? ` <i class="cnt">${n}</i>` : ''}</button>`; }).join('');
+}
+function chatMsgs(ch) {
+  const T = S.room.teams || {}, time = ts => new Date(ts).toLocaleTimeString('nl-BE', { hour: '2-digit', minute: '2-digit' });
+  return chatMsgsOf(ch).slice(-100).map(c => `<div class="msg ${c.pid === S.pid ? 'me' : ''} ${c.news ? 'news' : ''}">
+      <small>${c.news ? '📢 Mededeling · ' : ''}<b style="color:${c.sup ? '#5a3d22' : T[c.team]?.color || '#5a3d22'}">${esc(c.by)}</b>${c.sup ? ' 👑' : T[c.team] ? ' · ' + esc(T[c.team].name) : ''} · ${time(c.ts)}</small>
+      <div>${esc(c.text)}</div></div>`).join('')
+    || `<p class="hint center">${ch === 'all' ? 'Nog geen berichten. Iedereen in het spel leest mee.' : 'Nog geen berichten. Enkel deze groep en de leiding lezen dit.'}</p>`;
+}
+function shChat() {
+  const ch = chatChannels().some(([k]) => k === S.sheet.tab) ? S.sheet.tab : 'all';
+  S.sheet.tab = ch; markRead(ch);
+  const to = ch === 'all' ? 'Bericht aan iedereen…' : Me().sup ? `Bericht aan ${S.room.teams[ch]?.name}…` : 'Bericht aan de leiding…';
+  return `<h2>💬 Chat</h2><div class="tabs" id="chattabs">${chatTabs(ch)}</div><div class="chatmsgs" id="chatmsgs">${chatMsgs(ch)}</div>
+    <form class="chatform" id="chatform"><input id="chatin" maxlength="300" autocomplete="off" placeholder="${esc(to)}"><button class="btn small">Stuur</button></form>`;
+}
+async function sendChat(text, ch, news) {
+  const me = Me(); text = String(text || '').trim().slice(0, 300); if (!text || !me) return;
+  const key = await db.push(`${R()}/chat/${ch}`, { by: me.name, pid: S.pid, team: me.team || '', sup: !!me.sup, text, ts: db.now(), ...(news ? { news: true } : {}) });
+  ping(news ? 'news' : 'chat', key, ch);
+}
+A.sendNews = async () => {
+  const text = ($('#newsin')?.value || '').trim();
+  if (!text) return toast('Typ eerst een mededeling');
+  await sendChat(text, 'all', true);
+  S.newsDraft = ''; $('#newsin').value = '';
+  toast('Mededeling verstuurd');
+};
 
 /* ---------- opruimen ---------- */
 // Verwijdert spellen die al een tijd voorbij zijn, samen met hun foto's en posities, zodat de database niet volloopt.
