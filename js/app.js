@@ -1315,7 +1315,8 @@ function buzzPanel() {
 }
 
 // Pakketjes: de leiding kiest een code, steekt ze in het pakketje en neemt er een close-up foto van.
-// In de database staat enkel een hash van de code. De eerste groep die de code invult, heeft SHIELD_MS beschermde zones.
+// De code wordt nagekeken via een hash; de code zelf wordt ook bewaard zodat de leiding ze later nog kan opzoeken
+// (de app toont ze enkel aan de leiding). De eerste groep die de code invult, heeft SHIELD_MS beschermde zones.
 function loadPhoto(key) {
   if (S.photos[key] || S.loadingPh?.[key]) return;
   (S.loadingPh = S.loadingPh || {})[key] = true;
@@ -1324,7 +1325,7 @@ function loadPhoto(key) {
 function packList() {
   const T = S.room.teams || {}, P = Object.entries(S.room.packs || {}).sort((a, b) => b[1].at - a[1].at);
   P.forEach(([id]) => loadPhoto('pack-' + id));
-  return P.map(([id, p]) => `<div class="sub-card ${p.usedBy ? 'closed' : ''}"><small>📦 ${new Date(p.at).toLocaleTimeString('nl-BE', { hour: '2-digit', minute: '2-digit' })} · ${p.usedBy ? 'gevonden door <b>' + esc(T[p.usedBy]?.name) + '</b>' : '<b>nog niet gevonden</b>'}</small>
+  return P.map(([id, p]) => `<div class="sub-card ${p.usedBy ? 'closed' : ''}">${Me()?.sup ? `<div class="pkc">🔑 Code: <b>${p.code ? esc(p.code) : 'niet bewaard'}</b></div>` : ''}<small>📦 ${new Date(p.at).toLocaleTimeString('nl-BE', { hour: '2-digit', minute: '2-digit' })} · ${p.usedBy ? 'gevonden door <b>' + esc(T[p.usedBy]?.name) + '</b>' : '<b>nog niet gevonden</b>'}</small>
     ${S.photos['pack-' + id] ? `<img src="${S.photos['pack-' + id]}" alt="pakketje">` : S.photos['pack-' + id] === '' ? '' : '<div class="busy"><div class="spin"></div>Foto laden…</div>'}</div>`).join('') || '<p class="note">Nog geen pakketjes verstopt.</p>';
 }
 function shPacks() {
@@ -1356,7 +1357,7 @@ async function onPackFile(file) {
   try {
     const media = await prepareMedia(file), id = 'p' + rid();
     if (media.thumb) await db.set(`photos/${S.code}/pack-${id}`, media.thumb);
-    await db.set(`${R()}/packs/${id}`, { at: db.now(), hash: await packHash(code) });
+    await db.set(`${R()}/packs/${id}`, { at: db.now(), hash: await packHash(code), code });
     log('📦 De leiding heeft een pakketje verstopt! Bekijk de foto bij Pakketjes.');
     ping('pack', id);
     S.packCode = randCode(); renderSheet();

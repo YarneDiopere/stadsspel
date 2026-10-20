@@ -267,3 +267,5 @@ div.titem { cursor: default; }
 .btn.buzzer:disabled { animation: none; }
 @keyframes pulse { 50% { transform: scale(1.06); } }
 .cd { font-variant-numeric: tabular-nums; }
+.pkc { font-size: 1.05rem; margin-bottom: 4px; }
+.pkc b { font-family: ui-monospace, Consolas, monospace; letter-spacing: .12em; background: var(--ink); color: var(--gold); padding: 2px 8px; border-radius: 6px; }
