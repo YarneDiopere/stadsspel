@@ -44,6 +44,11 @@ export const DEFAULT_TASKS = [
   t('20 koprollen', 'Doe in totaal met je groepje 20 koprollen en film het.', 'Groepsleden die koprollen maken.', 2),
   t('Huisdier aaien', 'Aai een huisdier (vraag het eerst aan het baasje).', 'Iemand die een hond, kat of ander huisdier aait.', 1),
   t('Begrafenis', 'Organiseer een begrafenis voor een gevallen blad.', 'Een groep rond een blad op de grond, als bij een begrafenis.', 2),
+  t('Kabouterdans', 'Doe met je groep de kabouterdans en film het.', 'Een groep die samen de kabouterdans doet.', 1),
+  t('Filmscène', 'Speel een scène na uit je favoriete film en film het.', 'Groepsleden die samen een scène naspelen.', 2),
+  t('Reclame voor oudernamiddag', 'Maak een reclamefilmpje voor de oudernamiddag.', 'Groepsleden die reclame maken voor de oudernamiddag van de KSA.', 2),
+  t('Dierenketting', 'Maak een woordenketting van 15 dieren: elk dier begint met de laatste letter van het vorige (dieR → RooS → Slang …). Schrijf ze op en neem er een foto van.', 'Een geschreven lijst van 15 dieren waarbij elk woord begint met de laatste letter van het vorige.', 2),
+  t('Binnenstebuiten', 'Draag je jas of trui binnenstebuiten voor de rest van de activiteit.', 'Groepsleden met hun jas of trui binnenstebuiten aan.', 1),
 ];
 
 // Spelletjes voor een duel om een zone (modus Duel). Er wordt er telkens één willekeurig gekozen.

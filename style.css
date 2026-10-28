@@ -283,3 +283,5 @@ div.titem { cursor: default; }
 .pin.stale { opacity: .6; filter: grayscale(.7); }
 .bad { color: var(--red); }
 .flag.pack { font-size: 28px; }
+.pickrow { display: flex; gap: 8px; }
+.pickrow .btn { flex: 1; text-align: center; }

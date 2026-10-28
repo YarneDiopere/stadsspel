@@ -936,7 +936,9 @@ function shTask() {
   const t = S.room.tasks[S.sheet.id], T = myTeam(), last = isDuel() ? latestSub(S.sheet.id, S.sheet.zid) : lastSubs()[S.sheet.id], m = meta(), ph = phase();
   const list = Object.keys(S.room.tasks), allDone = list.every(id => T.done?.[id]);
   const done = !isDuel() && T.done?.[S.sheet.id] && !allDone, zid = target(), z = zid && zoneById(zid), st = last && subState(last);
-  const upload = `<label class="btn big filebtn">📷 Foto of filmpje maken<input type="file" accept="image/*,video/*" capture="environment" data-file="${S.sheet.id}" hidden></label><p class="hint">Filmpjes: hou ze korter dan 15 seconden.</p>`;
+  // Twee knoppen: meteen de camera openen, of een foto of filmpje uit de galerij kiezen.
+  const upload = `<div class="pickrow"><label class="btn big filebtn">📷 Camera<input type="file" accept="image/*,video/*" capture="environment" data-file="${S.sheet.id}" hidden></label>
+    <label class="btn big alt filebtn">🖼️ Galerij<input type="file" accept="image/*,video/*" data-file="${S.sheet.id}" hidden></label></div><p class="hint">Filmpjes: hou ze korter dan 15 seconden.</p>`;
   let action;
   if (S.busy) action = `<div class="busy"><div class="spin"></div>${esc(S.busy)}</div>`;
   else if (ph !== 'playing') action = `<p class="note">${ph === 'ended' ? 'Het spel is afgelopen.' : 'Het spel is nog niet gestart.'}</p>`;
@@ -1426,7 +1428,9 @@ function packPanel() {
   return `<p class="hint">Kies een code, steek ze in het pakketje en neem een close-up foto. Alle groepen krijgen de foto te zien. De eerste groep die de code invult, heeft ${SHIELD_MS / 60000} minuten beschermde zones.</p>
     <p class="hint">${S.pos ? '📍 De plek waar je nu staat wordt bewaard: enkel de leiding ziet het pakketje op de kaart, tot het gevonden is.' : '⚠ Je locatie is niet bekend: dit pakketje komt niet op de kaart.'}</p>
     <label>Code in het pakketje<input id="pkcode" maxlength="12" autocomplete="off" autocapitalize="characters" value="${esc(S.packCode)}"></label>
-    <label class="btn big filebtn">📷 Foto maken en pakketje vrijgeven<input type="file" accept="image/*" capture="environment" data-packfile="1" hidden></label>
+    <p class="q">Foto van het pakketje (geeft het meteen vrij)</p>
+    <div class="pickrow"><label class="btn big filebtn">📷 Camera<input type="file" accept="image/*" capture="environment" data-packfile="1" hidden></label>
+    <label class="btn big alt filebtn">🖼️ Galerij<input type="file" accept="image/*" data-packfile="1" hidden></label></div>
     <h3 class="gap">Verstopte pakketjes</h3>${packList()}`;
 }
 async function onPackFile(file) {
