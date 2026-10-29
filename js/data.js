@@ -49,6 +49,12 @@ export const DEFAULT_TASKS = [
   t('Reclame voor oudernamiddag', 'Maak een reclamefilmpje voor de oudernamiddag.', 'Groepsleden die reclame maken voor de oudernamiddag van de KSA.', 2),
   t('Dierenketting', 'Maak een woordenketting van 15 dieren: elk dier begint met de laatste letter van het vorige (dieR → RooS → Slang …). Schrijf ze op en neem er een foto van.', 'Een geschreven lijst van 15 dieren waarbij elk woord begint met de laatste letter van het vorige.', 2),
   t('Binnenstebuiten', 'Draag je jas of trui binnenstebuiten voor de rest van de activiteit.', 'Groepsleden met hun jas of trui binnenstebuiten aan.', 1),
+  t('Gepersonaliseerde nummerplaat', 'Vind een gepersonaliseerde nummerplaat.', 'Een nummerplaat met een eigen tekst of naam in plaats van een gewone combinatie.', 2),
+  t('Interview', 'Interview een voorbijganger en film het.', 'Een groepslid dat een voorbijganger interviewt.', 2),
+  t('Na-aper', 'Aap een voorbijganger een minuut lang na en film het.', 'Een groepslid dat achter of naast een voorbijganger diens bewegingen nadoet.', 2),
+  t('Boomknuffel', 'Knuffel een boom voor 2 minuten en film het.', 'Iemand die een boom knuffelt.', 1),
+  t('Huisnummer 67', 'Vind huisnummer 67 en doe de 67-move erbij.', 'Huisnummer 67 op een gevel of brievenbus, met iemand die de 67-move doet.', 1),
+  t('Limbo', 'Doe de limbo met een voorbijganger en film het.', 'Een voorbijganger die samen met de groep de limbo doet.', 2),
 ];
 
 // Spelletjes voor een duel om een zone (modus Duel). Er wordt er telkens één willekeurig gekozen.
