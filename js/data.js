@@ -55,6 +55,11 @@ export const DEFAULT_TASKS = [
   t('Boomknuffel', 'Knuffel een boom voor 2 minuten en film het.', 'Iemand die een boom knuffelt.', 1),
   t('Huisnummer 67', 'Vind huisnummer 67 en doe de 67-move erbij.', 'Huisnummer 67 op een gevel of brievenbus, met iemand die de 67-move doet.', 1),
   t('Limbo', 'Doe de limbo met een voorbijganger en film het.', 'Een voorbijganger die samen met de groep de limbo doet.', 2),
+  t('Influencer', 'Doe alsof je een influencer bent en maak een vlog van 30 seconden.', 'Een groepslid dat als influencer in de camera praat.', 1),
+  t('Vuistjes', 'Krijg een vuistje van drie verschillende mensen.', 'Groepsleden die een vuistje geven aan voorbijgangers.', 1),
+  t('Jumping jacks', 'Vraag iemand om een cijfer tussen 1 en 10 en doe evenveel jumping jacks. Film het.', 'Een voorbijganger die een cijfer zegt en groepsleden die jumping jacks doen.', 1),
+  t('Macarena', 'Doe met heel je groepje de macarena op een openbare plek en film het.', 'Een groep die samen de macarena danst op straat of een plein.', 1),
+  t('Film uitbeelden', 'Beeld de titel van een film uit zonder woorden. Film het: de leiding moet raden welke film het is.', 'Groepsleden die zonder woorden een filmtitel uitbeelden. Enkel de leiding kan dit beoordelen.', 2),
 ];
 
 // Spelletjes voor een duel om een zone (modus Duel). Er wordt er telkens één willekeurig gekozen.
